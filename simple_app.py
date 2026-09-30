@@ -189,14 +189,27 @@ def _video_info(path):
 
 
 def build_ui(session):
+    import contextvars
+
     import gradio as gr
     from shared.api import create_gradio_progress_callbacks
 
     active = {"job": None}
 
     def run(settings, progress):
+        # Wan2GP fires callbacks on its job thread, where Gradio has no event context and would drop the updates
+        ctx = contextvars.copy_context()
+        inner = create_gradio_progress_callbacks(progress)
+
+        class Callbacks:
+            def on_status(self, status):
+                ctx.run(inner.on_status, status)
+
+            def on_progress(self, update):
+                ctx.run(inner.on_progress, update)
+
         try:
-            job = session.submit_task(settings, callbacks=create_gradio_progress_callbacks(progress))
+            job = session.submit_task(settings, callbacks=Callbacks())
         except RuntimeError as e:
             raise gr.Error(str(e))
         active["job"] = job
