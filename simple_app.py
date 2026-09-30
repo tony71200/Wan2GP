@@ -59,3 +59,62 @@ def parse_ideas(text):
         if line:
             ideas.append(line)
     return ideas[:3]
+
+
+def _lora_settings(loras, high, low, smooth):
+    names, mults = pair_loras(list(loras or []), high, low)
+    return {
+        "activated_loras": names,
+        "loras_multipliers": mults,
+        "temporal_upsampling": "rife*2" if smooth else "",
+    }
+
+
+def reels_settings(defaults, *, image, prompt, resolution, seconds, seed, loras=(), high=1.0, low=0.0, smooth=True):
+    return {
+        **defaults,
+        "model_type": REELS_MODEL,
+        "prompt": prompt,
+        "image_prompt_type": "S",
+        "image_start": image,
+        "resolution": resolution,
+        "video_length": frames_for(seconds),
+        "seed": int(seed),
+        **_lora_settings(loras, high, low, smooth),
+    }
+
+
+def extend_settings(defaults, *, video, anchor, prompt, resolution, seconds, seed, loras=(), high=1.0, low=0.0, smooth=True):
+    """Continue `video` with SVI 2 Pro, anchoring every window on the original image."""
+    return {
+        **defaults,
+        "model_type": EXTEND_MODEL,
+        "prompt": prompt,
+        "image_prompt_type": "V",
+        "image_start": None,
+        "video_source": video,
+        "video_prompt_type": "KI",
+        "image_refs": [anchor],
+        "resolution": resolution,
+        "video_length": frames_for(seconds),
+        "seed": int(seed),
+        **_lora_settings(loras, high, low, smooth),
+    }
+
+
+def motion_settings(defaults, *, image, video, description, resolution, frames, seed):
+    """Animate 2 with the character image as a reference for every window."""
+    return {
+        **defaults,
+        "model_type": MOTION_MODEL,
+        "prompt": (description or "").strip() or defaults.get("prompt", ""),
+        "image_prompt_type": "T",
+        "image_start": None,
+        "video_prompt_type": "UVI",
+        "image_refs": [image],
+        "video_guide": video,
+        "resolution": resolution,
+        "video_length": int(frames),
+        "force_fps": "control",
+        "seed": int(seed),
+    }
