@@ -220,12 +220,37 @@ def build_ui(session):
             return gr.update(), gr.update()
         return video, {"video": video, "image": image, "resolution": settings["resolution"]}
 
+    def suggest_ideas(image, hint, progress=gr.Progress()):
+        if not image:
+            raise gr.Error("Chưa có ảnh đầu vào.")
+        if active["job"] is not None:
+            raise gr.Error("Đang tạo video, chờ xong rồi gợi ý.")
+        text = (hint or "").strip() or "Suggest short video ideas for this image."
+        ideas = parse_ideas(enhance(session, "", text, image, IDEAS_INSTRUCTIONS, progress))
+        if not ideas:
+            raise gr.Error("Không nhận được ý tưởng nào, thử lại.")
+        return gr.update(choices=ideas, value=None, visible=True)
+
+    def write_detail(image, hint, progress=gr.Progress()):
+        if not image:
+            raise gr.Error("Chưa có ảnh đầu vào.")
+        if not (hint or "").strip():
+            raise gr.Error("Nhập ý ngắn hoặc chọn một ý tưởng trước.")
+        if active["job"] is not None:
+            raise gr.Error("Đang tạo video, chờ xong rồi gợi ý.")
+        return enhance(session, "", hint.strip(), image, DETAIL_INSTRUCTIONS, progress)
+
     with gr.Blocks(title="Simple App") as demo:
         r_last = gr.State(None)
         with gr.Tab("Reels"):
             with gr.Row():
                 with gr.Column():
                     r_image = gr.Image(type="filepath", label="Ảnh đầu vào", sources=["upload", "clipboard"])
+                    r_hint = gr.Textbox(label="Ý ngắn", placeholder="cô ấy quay lại và cười")
+                    with gr.Row():
+                        r_ideas_btn = gr.Button("3 ý tưởng")
+                        r_detail_btn = gr.Button("Viết chi tiết")
+                    r_ideas = gr.Radio(choices=[], label="Ý tưởng", visible=False)
                     r_prompt = gr.Textbox(label="Prompt", lines=5)
                     r_seconds = gr.Slider(2, 5, value=5, step=1, label="Thời lượng (giây)")
                     with gr.Row():
@@ -243,6 +268,9 @@ def build_ui(session):
                     r_video = gr.Video(label="Video kết quả", autoplay=True)
 
         r_loras.focus(lora_choices, outputs=r_loras)
+        r_ideas_btn.click(suggest_ideas, [r_image, r_hint], r_ideas)
+        r_ideas.change(lambda idea: idea or gr.update(), r_ideas, r_hint)
+        r_detail_btn.click(write_detail, [r_image, r_hint], r_prompt)
         r_go.click(
             make_reel,
             [r_image, r_prompt, r_seconds, r_quality, r_smooth, r_loras, r_high, r_low, r_seed],
