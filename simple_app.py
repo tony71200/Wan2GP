@@ -103,12 +103,19 @@ def extend_settings(defaults, *, video, anchor, prompt, resolution, seconds, see
     }
 
 
+# The model's own default prompt describes a demo character (a cat in a school uniform), so never fall back to it.
+MOTION_DEFAULT_PROMPT = (
+    "Character appearance: the same people as in the reference image, with the same faces, hairstyles and outfits. "
+    "Background: the same place as in the reference image."
+)
+
+
 def motion_settings(defaults, *, image, video, description, resolution, frames, seed):
     """Animate 2 with the character image as a reference for every window."""
     return {
         **defaults,
         "model_type": MOTION_MODEL,
-        "prompt": (description or "").strip() or defaults.get("prompt", ""),
+        "prompt": (description or "").strip() or MOTION_DEFAULT_PROMPT,
         "image_prompt_type": "T",
         "image_start": None,
         "video_prompt_type": "UVI",
@@ -335,7 +342,7 @@ def build_ui(session):
                         m_video = gr.Video(label="Video mẫu", sources=["upload"])
                     m_desc = gr.Textbox(
                         label="Mô tả nhân vật (không bắt buộc)", lines=2,
-                        placeholder=session.get_default_settings(MOTION_MODEL).get("prompt", ""),
+                        placeholder="Character appearance: ... Background: ...",
                     )
                     m_limit = gr.Slider(2, 10, value=5, step=1, label="Giới hạn thời lượng (giây)")
                     m_quality = gr.Radio(["480p", "720p"], value="480p", label="Chất lượng")

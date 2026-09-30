@@ -159,7 +159,9 @@ Settings, xây trên `session.get_default_settings("animate2_distilled")`. Ảnh
 }
 ```
 
-Tốc độ khung hình theo video mẫu (`force_fps: "control"`).
+Tốc độ khung hình theo video mẫu (`force_fps: "control"`). Video mẫu 30 fps tốn gần gấp đôi số frame so với 16 fps cho cùng thời lượng.
+
+Khi ô mô tả để trống, app gửi `MOTION_DEFAULT_PROMPT` (cùng người, cùng bối cảnh như ảnh tham chiếu). Không dùng prompt mặc định của model: đó là prompt mẫu tả một con mèo mặc đồng phục.
 
 ## Giữ nhân vật
 
@@ -175,6 +177,10 @@ Không có LoRA dùng chung nào khóa được khuôn mặt cho mọi nhân v�
 **Giai đoạn 2 (chỉ làm nếu mặt vẫn trôi sau khi thử bản đầu):** thêm tick "Sửa mặt theo ảnh gốc" cho cả hai tab, dùng H3 Face Refiner của Wan2GP (`spatial_upsampling` + `spatial_upsampler_reference_images` = ảnh gốc). Cần tải MiniMax H3 Ref2VA pruned, 21 GB. Phương án thay model cho Motion Control nếu cần: SCAIL-2 (16.6 GB, 40 bước).
 
 Không dùng: Lynx, Stand-In, Phantom (chuyển khuôn mặt cho text-to-video Wan 2.1, không bắt đầu từ ảnh người dùng).
+
+## Tiến độ
+
+Wan2GP gọi callback tiến độ từ luồng job, nơi Gradio không có ngữ cảnh sự kiện. `run()` chụp ngữ cảnh bằng `contextvars.copy_context()` trong handler và chạy callback bên trong ngữ cảnh đó; nếu không, thanh tiến độ đứng yên suốt lúc sinh video.
 
 ## Xử lý lỗi
 
@@ -192,7 +198,7 @@ Không dùng: Lynx, Stand-In, Phantom (chuyển khuôn mặt cho text-to-video W
 
 1. **Gợi ý prompt ở chế độ độc lập.** API không có hàm công khai; app dựa vào hàm nội bộ và `session._state`. Bước đầu tiên của kế hoạch là thử riêng lời gọi này. Nếu không chạy được, chuyển app thành plugin tab (`plugins/wan2gp-simple-app/`) dùng `api_session` và `state` do Wan2GP cấp; UI và các hàm thuần giữ nguyên. **Kết quả 2026-09-30:** chạy được ở chế độ độc lập (`--check-enhancer`, và qua endpoint của app); không cần phương án plugin.
 2. **Đổi model trên 12GB.** Qwen và model video không nằm cùng lúc trên GPU; mỗi lần gợi ý rồi sinh video sẽ tốn thời gian nạp lại. Chấp nhận ở bản đầu. **Kết quả 2026-09-30:** đổi qua lại Qwen ↔ model video không lỗi; mỗi lần gợi ý mất khoảng 1 phút tính cả nạp model.
-3. **Khóa settings của Animate 2 và SVI 2 Pro chưa chạy thử.** Các giá trị `image_prompt_type` / `video_prompt_type` / `image_refs` ở trên đọc từ `models/wan/wan_handler.py`; xác nhận bằng cách so với settings xuất từ UI Wan2GP và lần chạy tay đầu tiên. **Kết quả 2026-09-30:** SVI 2 Pro (`V` + `KI` + `image_refs`) chạy được qua `--check-extend`. Animate 2 chưa chạy thử vì chưa tải model 17 GB.
+3. **Khóa settings của Animate 2 và SVI 2 Pro chưa chạy thử.** Các giá trị `image_prompt_type` / `video_prompt_type` / `image_refs` ở trên đọc từ `models/wan/wan_handler.py`; xác nhận bằng cách so với settings xuất từ UI Wan2GP và lần chạy tay đầu tiên. **Kết quả 2026-09-30:** SVI 2 Pro (`V` + `KI` + `image_refs`) chạy được qua `--check-extend`. Animate 2 (`T` + `UVI` + `image_refs`) chạy được qua `--check-motion` trên ảnh hai nhân vật và video mẫu 30 fps: 149 frame, 3 cửa sổ, mặt và trang phục giữ nguyên qua cả ba cửa sổ.
 4. **Kéo dài video khi nguồn là 32 fps.** Nếu Wan2GP không tự đưa video nguồn về 16 fps, app giữ bản 16 fps gốc (sinh với `temporal_upsampling` rỗng) để làm `video_source` và chỉ nội suy ở bản hiển thị. **Kết quả 2026-09-30:** không xảy ra; nguồn 32 fps (161 frame) được nối đúng tốc độ, kết quả 9.78 giây ở 32 fps.
 5. **720p trên 12GB.** Chậm hơn và có thể thiếu VRAM với Animate 2; mặc định vẫn là 480p. **Kết quả 2026-09-30:** chưa thử 720p.
 
@@ -205,6 +211,8 @@ Không dùng: Lynx, Stand-In, Phantom (chuyển khuôn mặt cho text-to-video W
 | Reel 5 giây, 81 frame, 4 bước (`--check-reel`, gồm tự viết prompt và nạp model) | 9 phút 14 giây; riêng khử nhiễu 6 phút 26 giây (khoảng 97 giây mỗi bước) |
 | Kéo dài thêm 2 giây, 29 frame, 8 bước (`--check-extend`) | 7 phút 43 giây; riêng khử nhiễu 6 phút 14 giây |
 | Kéo dài 81 frame, 8 bước (trước khi trừ chồng lấn) | cửa sổ một 14 phút 11 giây, cửa sổ hai thừa 4 phút 9 giây |
+| Reel 2 giây, 33 frame, qua hàng đợi của app | 3 phút 43 giây |
+| Motion Control 5 giây ở 30 fps, 149 frame, `480x848`, 10 bước, 3 cửa sổ (`--check-motion`) | khử nhiễu 15 phút 35 giây + 15 phút 42 giây + 6 phút 37 giây; khoảng 94 giây mỗi bước cho cửa sổ 65 frame |
 
 Máy thiếu RAM để ghim cả hai transformer (log: "Unable to pin data of 'transformer2'"), nên tốc độ bị giới hạn bởi việc chuyển dữ liệu RAM → VRAM.
 
@@ -252,3 +260,7 @@ Giữ nhân vật:
 - https://civitai.com/models/2288568/wan22-stand-in-face-consistency (chưa kiểm chứng, ComfyUI)
 - https://wananimate.app/character-animation-replacement
 - https://poyo.ai/hub/wan-animate-2-complete-guide
+
+## Vấn đề còn mở
+
+Người dùng gặp một lần lỗi `TypeError: 'method' object does not support item assignment` trong `gradio/queueing.py:327` (`Queue.start_processing`), làm vòng xử lý hàng đợi dừng. Ngày 2026-09-30 chưa tái hiện được: các sự kiện của app qua `/queue/join`, một lần sinh video thật qua hàng đợi, và các sự kiện gửi sau đó đều chạy bình thường. Chưa biết nguyên nhân; cần thao tác cụ thể và log console phía trên dòng lỗi.

@@ -1,5 +1,5 @@
 from simple_app import (
-    REELS_MODEL, EXTEND_MODEL, MOTION_MODEL,
+    REELS_MODEL, EXTEND_MODEL, MOTION_MODEL, MOTION_DEFAULT_PROMPT,
     pick_resolution, frames_for, round_frames, pair_loras, parse_ideas,
     reels_settings, extend_settings, motion_settings,
 )
@@ -95,7 +95,7 @@ def test_motion_settings():
     s = motion_settings(defaults, image="c.png", video="d.mp4", description="", resolution="480x832", frames=149, seed=-1)
     assert s["model_type"] == MOTION_MODEL
     assert s["num_inference_steps"] == 10
-    assert s["prompt"] == "Character appearance: default"
+    assert s["prompt"] == MOTION_DEFAULT_PROMPT
     assert s["image_prompt_type"] == "T" and s["image_start"] is None
     assert s["video_prompt_type"] == "UVI" and s["image_refs"] == ["c.png"]
     assert s["video_guide"] == "d.mp4" and s["force_fps"] == "control"
