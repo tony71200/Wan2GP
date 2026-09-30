@@ -85,7 +85,7 @@ def test_extend_settings():
     assert s["image_prompt_type"] == "V" and s["video_source"] == "v.mp4"
     assert s["video_prompt_type"] == "KI" and s["image_refs"] == ["a.png"]
     assert s["image_start"] is None
-    assert s["video_length"] == 49 and s["seed"] == 5
+    assert s["video_length"] == 45 and s["seed"] == 5
     assert s["activated_loras"] == [] and s["loras_multipliers"] == ""
     assert s["temporal_upsampling"] == "rife*2"
 

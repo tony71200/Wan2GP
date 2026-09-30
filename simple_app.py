@@ -96,7 +96,8 @@ def extend_settings(defaults, *, video, anchor, prompt, resolution, seconds, see
         "video_prompt_type": "KI",
         "image_refs": [anchor],
         "resolution": resolution,
-        "video_length": frames_for(seconds),
+        # 4 = SVI 2 Pro window overlap; asking for the full window spills a few frames into a second, wasted window
+        "video_length": frames_for(seconds) - 4,
         "seed": int(seed),
         **_lora_settings(loras, high, low, smooth),
     }
@@ -169,9 +170,26 @@ def enhance(session, model_type, text, image, instructions=None, progress=None):
     return str(out[0]) if out else ""
 
 
+def _image_size(path):
+    from PIL import Image
+
+    with Image.open(path) as im:
+        return im.size
+
+
+def _video_info(path):
+    """Return (fps, frame_count) of a video file."""
+    import cv2
+
+    cap = cv2.VideoCapture(path)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 16
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+    return fps, total
+
+
 def build_ui(session):
     import gradio as gr
-    from PIL import Image
     from shared.api import create_gradio_progress_callbacks
 
     active = {"job": None}
@@ -187,7 +205,7 @@ def build_ui(session):
         finally:
             active["job"] = None
         if result.success and result.generated_files:
-            return result.generated_files[0]
+            return result.generated_files[-1]  # last file is the final video when sliding windows save intermediates
         if result.cancelled:
             return None
         raise gr.Error(str(result.errors[0]) if result.errors else "Wan2GP không trả về file nào.")
@@ -197,10 +215,6 @@ def build_ui(session):
         if job is not None and not job.done:
             job.cancel()
 
-    def image_size(path):
-        with Image.open(path) as im:
-            return im.size
-
     def lora_choices():
         return gr.update(choices=session.list_loras(REELS_MODEL)["loras"])
 
@@ -209,7 +223,7 @@ def build_ui(session):
             raise gr.Error("Chưa có ảnh đầu vào.")
         if not (prompt or "").strip():
             raise gr.Error("Chưa có prompt.")
-        w, h = image_size(image)
+        w, h = _image_size(image)
         settings = reels_settings(
             session.get_default_settings(REELS_MODEL),
             image=image, prompt=prompt, resolution=pick_resolution(w, h, quality),
@@ -217,8 +231,40 @@ def build_ui(session):
         )
         video = run(settings, progress)
         if video is None:
+            return gr.update(), gr.update(), gr.update()
+        return video, {"video": video, "image": image, "resolution": settings["resolution"]}, gr.update(interactive=True)
+
+    def extend_reel(last, prompt, seconds, smooth, loras, high, low, seed, progress=gr.Progress()):
+        if not last:
+            raise gr.Error("Chưa có video để kéo dài.")
+        if not (prompt or "").strip():
+            raise gr.Error("Chưa có prompt.")
+        settings = extend_settings(
+            session.get_default_settings(EXTEND_MODEL),
+            video=last["video"], anchor=last["image"], prompt=prompt, resolution=last["resolution"],
+            seconds=seconds, seed=seed, loras=loras, high=high, low=low, smooth=smooth,
+        )
+        video = run(settings, progress)
+        if video is None:
             return gr.update(), gr.update()
-        return video, {"video": video, "image": image, "resolution": settings["resolution"]}
+        return video, {**last, "video": video}
+
+    def make_motion(image, video, description, limit, quality, seed, progress=gr.Progress()):
+        if not image:
+            raise gr.Error("Chưa có ảnh nhân vật.")
+        if not video:
+            raise gr.Error("Chưa có video mẫu.")
+        fps, total = _video_info(video)
+        if total < 5:
+            raise gr.Error("Không đọc được video mẫu.")
+        w, h = _image_size(image)
+        settings = motion_settings(
+            session.get_default_settings(MOTION_MODEL), image=image, video=video, description=description,
+            resolution=pick_resolution(w, h, quality),
+            frames=round_frames(min(total, limit * fps)), seed=seed,
+        )
+        out = run(settings, progress)
+        return out if out else gr.update()
 
     def suggest_ideas(image, hint, progress=gr.Progress()):
         if not image:
@@ -266,6 +312,29 @@ def build_ui(session):
                         r_cancel = gr.Button("Hủy")
                 with gr.Column():
                     r_video = gr.Video(label="Video kết quả", autoplay=True)
+                    r_extend = gr.Button("Kéo dài video (neo ảnh gốc)", interactive=False)
+
+        with gr.Tab("Motion control"):
+            with gr.Row():
+                with gr.Column():
+                    with gr.Row():
+                        m_image = gr.Image(type="filepath", label="Ảnh nhân vật", sources=["upload", "clipboard"])
+                        m_video = gr.Video(label="Video mẫu", sources=["upload"])
+                    m_desc = gr.Textbox(
+                        label="Mô tả nhân vật (không bắt buộc)", lines=2,
+                        placeholder=session.get_default_settings(MOTION_MODEL).get("prompt", ""),
+                    )
+                    m_limit = gr.Slider(2, 10, value=5, step=1, label="Giới hạn thời lượng (giây)")
+                    m_quality = gr.Radio(["480p", "720p"], value="480p", label="Chất lượng")
+                    m_seed = gr.Number(value=-1, precision=0, label="Seed (-1 = ngẫu nhiên)")
+                    if not session.get_model_availability(MOTION_MODEL)["available"]:
+                        gr.Markdown("Lần đầu sẽ tải model Animate 2 (17 GB).")
+                    with gr.Row():
+                        m_go = gr.Button("Tạo video", variant="primary")
+                        m_cancel = gr.Button("Hủy")
+                with gr.Column():
+                    m_out = gr.Video(label="Video kết quả", autoplay=True)
+                    gr.Markdown("Nhân vật luôn tham chiếu ảnh gốc ở mọi đoạn.")
 
         r_loras.focus(lora_choices, outputs=r_loras)
         r_ideas_btn.click(suggest_ideas, [r_image, r_hint], r_ideas)
@@ -274,42 +343,74 @@ def build_ui(session):
         r_go.click(
             make_reel,
             [r_image, r_prompt, r_seconds, r_quality, r_smooth, r_loras, r_high, r_low, r_seed],
+            [r_video, r_last, r_extend],
+        )
+        r_extend.click(
+            extend_reel,
+            [r_last, r_prompt, r_seconds, r_smooth, r_loras, r_high, r_low, r_seed],
             [r_video, r_last],
         )
         r_cancel.click(cancel, queue=False)
+        m_go.click(make_motion, [m_image, m_video, m_desc, m_limit, m_quality, m_seed], m_out)
+        m_cancel.click(cancel, queue=False)
     return demo
+
+
+def run_check(session, flag, args):
+    """Headless smoke checks: python simple_app.py --check-<name> <args...>"""
+
+    def generate(settings, label):
+        result = session.submit_task(settings).result()
+        assert result.success and result.generated_files, [str(e) for e in result.errors]
+        print(f"{label}:", result.generated_files[-1])
+
+    if flag in ("--check-enhancer", "--check-reel"):
+        (image,) = args
+        print("enhancer_enabled =", sys.modules["wgp"].server_config.get("enhancer_enabled", 0))
+        ideas = parse_ideas(enhance(session, "", "Suggest short video ideas for this image.", image, IDEAS_INSTRUCTIONS))
+        print("IDEAS:", ideas)
+        assert ideas, "no ideas returned"
+        detail = enhance(session, "", ideas[0], image, DETAIL_INSTRUCTIONS)
+        print("DETAIL:", detail)
+        assert detail.strip(), "empty detailed prompt"
+        print("enhancer check ok")
+        if flag == "--check-reel":
+            w, h = _image_size(image)
+            generate(reels_settings(
+                session.get_default_settings(REELS_MODEL),
+                image=image, prompt=detail, resolution=pick_resolution(w, h), seconds=5, seed=-1,
+            ), "REEL")
+    elif flag == "--check-extend":
+        video, image, *prompt_words = args
+        w, h = _image_size(image)
+        generate(extend_settings(
+            session.get_default_settings(EXTEND_MODEL),
+            video=video, anchor=image, prompt=" ".join(prompt_words), resolution=pick_resolution(w, h), seconds=2, seed=-1,
+        ), "EXTENDED")
+    elif flag == "--check-motion":
+        image, video = args
+        fps, total = _video_info(video)
+        w, h = _image_size(image)
+        generate(motion_settings(
+            session.get_default_settings(MOTION_MODEL), image=image, video=video, description="",
+            resolution=pick_resolution(w, h), frames=round_frames(min(total, 5 * fps)), seed=-1,
+        ), "MOTION")
+    else:
+        raise SystemExit(f"unknown check: {flag}")
 
 
 def main():
     import os
 
-    flag = sys.argv[1] if len(sys.argv) == 3 else None
-    check_image = str(Path(sys.argv[2]).resolve()) if flag in ("--check-enhancer", "--check-reel") else None
+    flag = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1].startswith("--check-") else None
+    # resolve file arguments before chdir; other arguments (a prompt) pass through unchanged
+    args = [str(Path(a).resolve()) if Path(a).exists() else a for a in sys.argv[2:]]
     os.chdir(ROOT)
     from shared.api import init
 
     session = init(root=ROOT, cli_args=["--profile", "4"])
-    if check_image:
-        print("enhancer_enabled =", sys.modules["wgp"].server_config.get("enhancer_enabled", 0))
-        ideas = parse_ideas(enhance(session, "", "Suggest short video ideas for this image.", check_image, IDEAS_INSTRUCTIONS))
-        print("IDEAS:", ideas)
-        assert ideas, "no ideas returned"
-        detail = enhance(session, "", ideas[0], check_image, DETAIL_INSTRUCTIONS)
-        print("DETAIL:", detail)
-        assert detail.strip(), "empty detailed prompt"
-        print("enhancer check ok")
-        if flag == "--check-reel":
-            from PIL import Image
-
-            with Image.open(check_image) as im:
-                w, h = im.size
-            settings = reels_settings(
-                session.get_default_settings(REELS_MODEL),
-                image=check_image, prompt=detail, resolution=pick_resolution(w, h), seconds=5, seed=-1,
-            )
-            result = session.submit_task(settings).result()
-            assert result.success and result.generated_files, [str(e) for e in result.errors]
-            print("REEL:", result.generated_files[0])
+    if flag:
+        run_check(session, flag, args)
         return
     build_ui(session).queue().launch(inbrowser=True, show_error=True)
 
