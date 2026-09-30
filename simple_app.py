@@ -118,3 +118,73 @@ def motion_settings(defaults, *, image, video, description, resolution, frames, 
         "force_fps": "control",
         "seed": int(seed),
     }
+
+
+IDEAS_INSTRUCTIONS = (
+    "You are a creative director for short vertical social videos. Look at the image and propose "
+    "exactly 3 different short video ideas that start from this exact image. Keep the same person, "
+    "face, outfit and setting. Write one idea per line, one sentence each, with no numbering and no extra text."
+)
+
+
+def enhance(session, model_type, text, image, instructions=None, progress=None):
+    """Run Wan2GP's local prompt enhancer on (text, image) and return the generated text."""
+    wgp = sys.modules["wgp"]
+    from shared.utils.model_unload import wait_for_model_unload
+    from shared.utils.process_locks import acquire_GPU_ressources, release_GPU_ressources
+
+    # ponytail: session._state is private to WanGPSession; switch to the plugin-provided state if the API changes
+    state = session._state
+    model_def = wgp.get_model_def(model_type) if model_type else None
+    wait_for_model_unload()
+    acquire_GPU_ressources(state, "prompt_enhancer", "Prompt Enhancer")
+    try:
+        wgp.ensure_prompt_enhancer_loaded(progress=progress)
+        out = wgp.process_prompt_enhancer(
+            model_type, model_def, "TI", [text], image, None, False, False, -1,
+            prompt_enhancer_instructions=instructions,
+        )
+    finally:
+        wgp.unload_prompt_enhancer_runtime()
+        if wgp.enhancer_offloadobj is not None:
+            wgp.enhancer_offloadobj.unload_all()
+        release_GPU_ressources(state, "prompt_enhancer")
+    return str(out[0]) if out else ""
+
+
+def main():
+    import os
+
+    flag = sys.argv[1] if len(sys.argv) == 3 else None
+    check_image = str(Path(sys.argv[2]).resolve()) if flag in ("--check-enhancer", "--check-reel") else None
+    os.chdir(ROOT)
+    from shared.api import init
+
+    session = init(root=ROOT, cli_args=["--profile", "4"])
+    if check_image:
+        print("enhancer_enabled =", sys.modules["wgp"].server_config.get("enhancer_enabled", 0))
+        ideas = parse_ideas(enhance(session, "", "Suggest short video ideas for this image.", check_image, IDEAS_INSTRUCTIONS))
+        print("IDEAS:", ideas)
+        assert ideas, "no ideas returned"
+        detail = enhance(session, REELS_MODEL, ideas[0], check_image)
+        print("DETAIL:", detail)
+        assert detail.strip(), "empty detailed prompt"
+        print("enhancer check ok")
+        if flag == "--check-reel":
+            from PIL import Image
+
+            with Image.open(check_image) as im:
+                w, h = im.size
+            settings = reels_settings(
+                session.get_default_settings(REELS_MODEL),
+                image=check_image, prompt=detail, resolution=pick_resolution(w, h), seconds=5, seed=-1,
+            )
+            result = session.submit_task(settings).result()
+            assert result.success and result.generated_files, [str(e) for e in result.errors]
+            print("REEL:", result.generated_files[0])
+        return
+    print("UI not built yet; run with --check-enhancer <image> or --check-reel <image>")
+
+
+if __name__ == "__main__":
+    main()
