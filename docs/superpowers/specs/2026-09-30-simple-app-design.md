@@ -114,7 +114,7 @@ Nút **Kéo dài video** nối thêm một đoạn vào video vừa sinh, dùng 
     "video_prompt_type": "KI",
     "image_refs": [original_image_path],
     "resolution": <như lần sinh trước>,
-    "video_length": frames_for(seconds),
+    "video_length": frames_for(seconds) - 4,   # trừ 4 frame chồng lấn của SVI để chỉ sinh một cửa sổ
     "seed": seed,
     "activated_loras": [...], "loras_multipliers": "...",
     "temporal_upsampling": "rife*2" if smooth else "",
@@ -190,11 +190,32 @@ Không dùng: Lynx, Stand-In, Phantom (chuyển khuôn mặt cho text-to-video W
 
 ## Rủi ro và phương án dự phòng
 
-1. **Gợi ý prompt ở chế độ độc lập.** API không có hàm công khai; app dựa vào hàm nội bộ và `session._state`. Bước đầu tiên của kế hoạch là thử riêng lời gọi này. Nếu không chạy được, chuyển app thành plugin tab (`plugins/wan2gp-simple-app/`) dùng `api_session` và `state` do Wan2GP cấp; UI và các hàm thuần giữ nguyên.
-2. **Đổi model trên 12GB.** Qwen và model video không nằm cùng lúc trên GPU; mỗi lần gợi ý rồi sinh video sẽ tốn thời gian nạp lại. Chấp nhận ở bản đầu.
-3. **Khóa settings của Animate 2 và SVI 2 Pro chưa chạy thử.** Các giá trị `image_prompt_type` / `video_prompt_type` / `image_refs` ở trên đọc từ `models/wan/wan_handler.py`; xác nhận bằng cách so với settings xuất từ UI Wan2GP và lần chạy tay đầu tiên.
-4. **Kéo dài video khi nguồn là 32 fps.** Nếu Wan2GP không tự đưa video nguồn về 16 fps, app giữ bản 16 fps gốc (sinh với `temporal_upsampling` rỗng) để làm `video_source` và chỉ nội suy ở bản hiển thị.
-5. **720p trên 12GB.** Chậm hơn và có thể thiếu VRAM với Animate 2; mặc định vẫn là 480p.
+1. **Gợi ý prompt ở chế độ độc lập.** API không có hàm công khai; app dựa vào hàm nội bộ và `session._state`. Bước đầu tiên của kế hoạch là thử riêng lời gọi này. Nếu không chạy được, chuyển app thành plugin tab (`plugins/wan2gp-simple-app/`) dùng `api_session` và `state` do Wan2GP cấp; UI và các hàm thuần giữ nguyên. **Kết quả 2026-09-30:** chạy được ở chế độ độc lập (`--check-enhancer`, và qua endpoint của app); không cần phương án plugin.
+2. **Đổi model trên 12GB.** Qwen và model video không nằm cùng lúc trên GPU; mỗi lần gợi ý rồi sinh video sẽ tốn thời gian nạp lại. Chấp nhận ở bản đầu. **Kết quả 2026-09-30:** đổi qua lại Qwen ↔ model video không lỗi; mỗi lần gợi ý mất khoảng 1 phút tính cả nạp model.
+3. **Khóa settings của Animate 2 và SVI 2 Pro chưa chạy thử.** Các giá trị `image_prompt_type` / `video_prompt_type` / `image_refs` ở trên đọc từ `models/wan/wan_handler.py`; xác nhận bằng cách so với settings xuất từ UI Wan2GP và lần chạy tay đầu tiên. **Kết quả 2026-09-30:** SVI 2 Pro (`V` + `KI` + `image_refs`) chạy được qua `--check-extend`. Animate 2 chưa chạy thử vì chưa tải model 17 GB.
+4. **Kéo dài video khi nguồn là 32 fps.** Nếu Wan2GP không tự đưa video nguồn về 16 fps, app giữ bản 16 fps gốc (sinh với `temporal_upsampling` rỗng) để làm `video_source` và chỉ nội suy ở bản hiển thị. **Kết quả 2026-09-30:** không xảy ra; nguồn 32 fps (161 frame) được nối đúng tốc độ, kết quả 9.78 giây ở 32 fps.
+5. **720p trên 12GB.** Chậm hơn và có thể thiếu VRAM với Animate 2; mặc định vẫn là 480p. **Kết quả 2026-09-30:** chưa thử 720p.
+
+## Kết quả đo ngày 2026-09-30 (RTX 5070 Ti Laptop 12GB, profile 4)
+
+Ảnh mẫu vuông 1344x1344 → `720x720`, Mượt x2 bật.
+
+| Việc | Thời gian |
+|---|---|
+| Reel 5 giây, 81 frame, 4 bước (`--check-reel`, gồm tự viết prompt và nạp model) | 9 phút 14 giây; riêng khử nhiễu 6 phút 26 giây (khoảng 97 giây mỗi bước) |
+| Kéo dài thêm 2 giây, 29 frame, 8 bước (`--check-extend`) | 7 phút 43 giây; riêng khử nhiễu 6 phút 14 giây |
+| Kéo dài 81 frame, 8 bước (trước khi trừ chồng lấn) | cửa sổ một 14 phút 11 giây, cửa sổ hai thừa 4 phút 9 giây |
+
+Máy thiếu RAM để ghim cả hai transformer (log: "Unable to pin data of 'transformer2'"), nên tốc độ bị giới hạn bởi việc chuyển dữ liệu RAM → VRAM.
+
+Lệnh kiểm tra không cần UI:
+
+```
+python simple_app.py --check-enhancer <ảnh>
+python simple_app.py --check-reel <ảnh>
+python simple_app.py --check-extend <video> <ảnh> <prompt ...>
+python simple_app.py --check-motion <ảnh> <video>
+```
 
 ## Ứng viên xóa sau khi app chạy ổn (người dùng quyết định)
 
