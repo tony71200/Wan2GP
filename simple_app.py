@@ -122,8 +122,25 @@ def motion_settings(defaults, *, image, video, description, resolution, frames, 
 
 IDEAS_INSTRUCTIONS = (
     "You are a creative director for short vertical social videos. Look at the image and propose "
-    "exactly 3 different short video ideas that start from this exact image. Keep the same person, "
-    "face, outfit and setting. Write one idea per line, one sentence each, with no numbering and no extra text."
+    "exactly 3 different short video ideas that start from this exact image. Each idea must work as one "
+    "continuous 5 second shot in the same place: no cuts, no change of location, lighting or time of day. "
+    "Keep the same person, face, hairstyle and setting, and prefer small natural actions over big ones. "
+    "The person keeps wearing exactly what they wear in the image. "
+    "Write one idea per line, one sentence each, with no numbering and no extra text."
+)
+
+# The model's own enhancer instructions ask for shot changes every second, which turns the person
+# into someone else. These keep one continuous shot and restate the subject on every line.
+DETAIL_INSTRUCTIONS = (
+    "You are an AI vision model writing a prompt for an image-to-video model. Analyze the provided image and the user's goal.\n"
+    "Describe ONE continuous shot that starts exactly from the image: no cuts, no scene change, no change of location, lighting, weather or time of day.\n"
+    "The person must stay the same person for the whole video: same face, hairstyle, hair color, body, skin tone, outfit and accessories as in the image. Never describe a different look.\n"
+    "Keep the motion natural and modest so the face stays recognizable. The camera is static or moves slowly.\n"
+    "Output rules:\n"
+    "Write one line per second, from 0 to 5 seconds.\n"
+    "Each line must begin with \"(at X seconds:\" where X is the second number, followed by a dense, comma-separated visual description, all inside a single set of parentheses.\n"
+    "Every line repeats the same subject and setting description taken from the image and changes only the action and the camera movement.\n"
+    "Do not include commentary, explanations, or meta-text."
 )
 
 
@@ -152,6 +169,89 @@ def enhance(session, model_type, text, image, instructions=None, progress=None):
     return str(out[0]) if out else ""
 
 
+def build_ui(session):
+    import gradio as gr
+    from PIL import Image
+    from shared.api import create_gradio_progress_callbacks
+
+    active = {"job": None}
+
+    def run(settings, progress):
+        try:
+            job = session.submit_task(settings, callbacks=create_gradio_progress_callbacks(progress))
+        except RuntimeError as e:
+            raise gr.Error(str(e))
+        active["job"] = job
+        try:
+            result = job.result()
+        finally:
+            active["job"] = None
+        if result.success and result.generated_files:
+            return result.generated_files[0]
+        if result.cancelled:
+            return None
+        raise gr.Error(str(result.errors[0]) if result.errors else "Wan2GP không trả về file nào.")
+
+    def cancel():
+        job = active["job"]
+        if job is not None and not job.done:
+            job.cancel()
+
+    def image_size(path):
+        with Image.open(path) as im:
+            return im.size
+
+    def lora_choices():
+        return gr.update(choices=session.list_loras(REELS_MODEL)["loras"])
+
+    def make_reel(image, prompt, seconds, quality, smooth, loras, high, low, seed, progress=gr.Progress()):
+        if not image:
+            raise gr.Error("Chưa có ảnh đầu vào.")
+        if not (prompt or "").strip():
+            raise gr.Error("Chưa có prompt.")
+        w, h = image_size(image)
+        settings = reels_settings(
+            session.get_default_settings(REELS_MODEL),
+            image=image, prompt=prompt, resolution=pick_resolution(w, h, quality),
+            seconds=seconds, seed=seed, loras=loras, high=high, low=low, smooth=smooth,
+        )
+        video = run(settings, progress)
+        if video is None:
+            return gr.update(), gr.update()
+        return video, {"video": video, "image": image, "resolution": settings["resolution"]}
+
+    with gr.Blocks(title="Simple App") as demo:
+        r_last = gr.State(None)
+        with gr.Tab("Reels"):
+            with gr.Row():
+                with gr.Column():
+                    r_image = gr.Image(type="filepath", label="Ảnh đầu vào", sources=["upload", "clipboard"])
+                    r_prompt = gr.Textbox(label="Prompt", lines=5)
+                    r_seconds = gr.Slider(2, 5, value=5, step=1, label="Thời lượng (giây)")
+                    with gr.Row():
+                        r_quality = gr.Radio(["480p", "720p"], value="480p", label="Chất lượng")
+                        r_smooth = gr.Checkbox(value=True, label="Mượt x2 (32 fps)")
+                    r_loras = gr.Dropdown(choices=session.list_loras(REELS_MODEL)["loras"], multiselect=True, label="LoRA (loras/wan)")
+                    with gr.Row():
+                        r_high = gr.Slider(0, 2, value=1, step=0.1, label="Pha đầu")
+                        r_low = gr.Slider(0, 2, value=0, step=0.1, label="Pha sau")
+                    r_seed = gr.Number(value=-1, precision=0, label="Seed (-1 = ngẫu nhiên)")
+                    with gr.Row():
+                        r_go = gr.Button("Tạo video", variant="primary")
+                        r_cancel = gr.Button("Hủy")
+                with gr.Column():
+                    r_video = gr.Video(label="Video kết quả", autoplay=True)
+
+        r_loras.focus(lora_choices, outputs=r_loras)
+        r_go.click(
+            make_reel,
+            [r_image, r_prompt, r_seconds, r_quality, r_smooth, r_loras, r_high, r_low, r_seed],
+            [r_video, r_last],
+        )
+        r_cancel.click(cancel, queue=False)
+    return demo
+
+
 def main():
     import os
 
@@ -166,7 +266,7 @@ def main():
         ideas = parse_ideas(enhance(session, "", "Suggest short video ideas for this image.", check_image, IDEAS_INSTRUCTIONS))
         print("IDEAS:", ideas)
         assert ideas, "no ideas returned"
-        detail = enhance(session, REELS_MODEL, ideas[0], check_image)
+        detail = enhance(session, "", ideas[0], check_image, DETAIL_INSTRUCTIONS)
         print("DETAIL:", detail)
         assert detail.strip(), "empty detailed prompt"
         print("enhancer check ok")
@@ -183,7 +283,7 @@ def main():
             assert result.success and result.generated_files, [str(e) for e in result.errors]
             print("REEL:", result.generated_files[0])
         return
-    print("UI not built yet; run with --check-enhancer <image> or --check-reel <image>")
+    build_ui(session).queue().launch(inbrowser=True, show_error=True)
 
 
 if __name__ == "__main__":

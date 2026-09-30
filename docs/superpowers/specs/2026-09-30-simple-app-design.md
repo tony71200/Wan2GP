@@ -130,7 +130,9 @@ Dùng Qwen3.5-4B Abliterated có vision (đã có trên đĩa) qua hàm nội b�
 Cả hai nút đi qua một hàm `enhance(session, model_type, text, image, instructions=None, progress=None)`, hàm này gọi `wgp.process_prompt_enhancer` ở chế độ `"TI"` và bao quanh bằng cùng chuỗi nạp/nhả mà `exec_prompt_enhancer_engine` dùng (`wait_for_model_unload`, `acquire_GPU_ressources`, `ensure_prompt_enhancer_loaded`, rồi nhả sau khi xong).
 
 - **3 ý tưởng**: `model_type=""` (không dùng chỉ dẫn của model) và chỉ dẫn riêng yêu cầu đúng 3 ý tưởng video ngắn khác nhau, mỗi ý một dòng, một câu, phù hợp với ảnh và giữ nguyên nhân vật. Kết quả qua `parse_ideas` rồi hiện thành radio. Chọn một ý thì điền vào ô "ý ngắn".
-- **Viết chi tiết**: `model_type` là model Reels, nên dùng chỉ dẫn theo từng giây có sẵn trong định nghĩa model. Đầu vào là ảnh và ô "ý ngắn". Kết quả điền vào ô prompt, người dùng sửa được.
+- **Viết chi tiết**: cũng `model_type=""`, với chỉ dẫn riêng `DETAIL_INSTRUCTIONS`: một cú máy liên tục, không chuyển cảnh, mỗi giây một dòng dạng `(at X seconds: ...)`, dòng nào cũng nhắc lại cùng nhân vật và bối cảnh, chỉ đổi hành động và chuyển động máy. Đầu vào là ảnh và ô "ý ngắn". Kết quả điền vào ô prompt, người dùng sửa được.
+
+Không dùng chỉ dẫn có sẵn trong định nghĩa model Enhanced Lightning v2: nó khuyến khích đổi góc máy và chuyển cảnh theo từng giây. Thử ngày 2026-09-30 trên ảnh mẫu, prompt sinh từ chỉ dẫn đó làm nhân vật đổi tóc và đổi bối cảnh ngay giữa video; với `DETAIL_INSTRUCTIONS` thì người và bối cảnh giữ nguyên qua cả 5 giây.
 
 Hàm cần `state` của session (`session._state`, thuộc tính riêng tư) và module `wgp` đã nạp. `python simple_app.py --check-enhancer <ảnh>` chạy riêng phần này để kiểm tra.
 
