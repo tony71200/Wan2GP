@@ -4,6 +4,7 @@ from simple_app import (
     reels_settings, extend_settings, motion_settings,
     reel_plan, reel_windows, split_timeline, ideas_instructions, detail_instructions,
     multi_settings, aspect_mismatch, MAX_IMAGES,
+    ANIMATE_MODEL, FUSIONX_LORA, MOTION_MODELS, MOTION_WINDOWS, motion_frames, sliding_windows,
 )
 
 
@@ -100,9 +101,37 @@ def test_motion_settings():
     assert s["prompt"] == MOTION_DEFAULT_PROMPT
     assert s["image_prompt_type"] == "T" and s["image_start"] is None
     assert s["video_prompt_type"] == "UVI" and s["image_refs"] == ["c.png"]
-    assert s["video_guide"] == "d.mp4" and s["force_fps"] == "control"
+    assert s["video_guide"] == "d.mp4" and s["force_fps"] == "16"
     assert s["video_length"] == 149 and s["resolution"] == "480x832"
+    assert s["temporal_upsampling"] == ""
     assert motion_settings(defaults, image="c.png", video="d.mp4", description=" red hair ", resolution="480x832", frames=65, seed=1)["prompt"] == "red hair"
+
+    a = motion_settings(
+        {"num_inference_steps": 30, "guidance_scale": 5}, image="c.png", video="d.mp4", description="",
+        resolution="480x832", frames=433, seed=2, model=ANIMATE_MODEL, smooth=True,
+    )
+    assert a["model_type"] == "animate"
+    assert a["image_prompt_type"] == "" and a["video_prompt_type"] == "PVBKI"
+    assert a["image_refs"] == ["c.png"] and a["video_guide"] == "d.mp4"
+    assert a["activated_loras"] == [FUSIONX_LORA] and a["loras_multipliers"] == "1"
+    assert a["num_inference_steps"] == 10 and a["guidance_phases"] == 1 and a["guidance_scale"] == 1
+    assert a["sliding_window_size"] == 81 and a["force_fps"] == "16"
+    assert a["video_length"] == 433 and a["temporal_upsampling"] == "rife*2"
+    assert MOTION_MODELS == {"Animate 2 distilled": MOTION_MODEL, "Wan 2.2 Animate 14B": ANIMATE_MODEL}
+
+
+def test_motion_frames():
+    assert motion_frames(30, 813) == 433        # 27.1 s at 30 fps -> 27.06 s at 16 fps
+    assert motion_frames(30, 813, 5) == 81
+    assert motion_frames(30, 813, 40) == 433    # a limit above the video length changes nothing
+    assert motion_frames(30, 60) == 33
+    assert motion_frames(30, 3) == 5
+
+
+def test_sliding_windows():
+    assert sliding_windows(433, *MOTION_WINDOWS[MOTION_MODEL]) == [65] * 6 + [49]
+    assert sliding_windows(433, *MOTION_WINDOWS[ANIMATE_MODEL]) == [81] * 5 + [53]
+    assert sliding_windows(49, 65, 1) == [49]
 
 
 def test_reel_plan():

@@ -8,6 +8,10 @@ REELS_MODEL = "i2v_2_2_Enhanced_Lightning_v2"
 EXTEND_MODEL = "i2v_2_2_Enhanced_Lightning_v2_svi2pro"
 MOTION_MODEL = "animate2_distilled"
 FPS = 16  # Wan 2.2 i2v output rate; Motion Control resamples the driving video to it
+ANIMATE_MODEL = "animate"  # Wan 2.2 Animate 14B
+FUSIONX_LORA = "Wan2.1_I2V_14B_FusionX_LoRA.safetensors"  # loras/wan_i2v, 10-step accelerator
+MOTION_MODELS = {"Animate 2 distilled": MOTION_MODEL, "Wan 2.2 Animate 14B": ANIMATE_MODEL}
+MOTION_WINDOWS = {MOTION_MODEL: (65, 1), ANIMATE_MODEL: (81, 5)}  # (window size, overlap)
 
 # quality -> (portrait, square, landscape)
 RESOLUTIONS = {
@@ -33,6 +37,20 @@ def pick_resolution(w, h, quality="480p"):
 def round_frames(n):
     """Largest 4k+1 frame count not above n (minimum 5)."""
     return max(5, (int(n) - 1) // 4 * 4 + 1)
+
+
+def motion_frames(src_fps, src_frames, limit=None):
+    """Frames at FPS covering the whole driving video, or its first `limit` seconds."""
+    seconds = src_frames / src_fps
+    if limit:
+        seconds = min(limit, seconds)
+    return max(5, round((seconds * FPS - 1) / 4) * 4 + 1)
+
+
+def sliding_windows(frames, size, overlap):
+    """Frames per sliding window when `frames` are generated in windows of `size` sharing `overlap` frames."""
+    count = 1 + max(0, -(-(frames - size) // (size - overlap)))
+    return [size] * (count - 1) + [frames - (count - 1) * (size - overlap)]
 
 
 def frames_for(seconds, fps=16):
@@ -214,22 +232,36 @@ MOTION_DEFAULT_PROMPT = (
 )
 
 
-def motion_settings(defaults, *, image, video, description, resolution, frames, seed):
-    """Animate 2 with the character image as a reference for every window."""
-    return {
+def motion_settings(defaults, *, image, video, description, resolution, frames, seed, model=MOTION_MODEL, smooth=False):
+    """Character image animated by the driving video; the image is the reference for every window."""
+    settings = {
         **defaults,
-        "model_type": MOTION_MODEL,
+        "model_type": model,
         "prompt": (description or "").strip() or MOTION_DEFAULT_PROMPT,
-        "image_prompt_type": "T",
         "image_start": None,
-        "video_prompt_type": "UVI",
         "image_refs": [image],
         "video_guide": video,
         "resolution": resolution,
         "video_length": int(frames),
-        "force_fps": "control",
+        "force_fps": str(FPS),  # resample the driving video: half the frames of 30 fps, same duration
         "seed": int(seed),
+        "temporal_upsampling": "rife*2" if smooth else "",
     }
+    if model == ANIMATE_MODEL:
+        settings.update(
+            image_prompt_type="",
+            video_prompt_type="PVBKI",  # Animate Person in Reference Image using Motion of Whole Control Video
+            activated_loras=[FUSIONX_LORA],
+            loras_multipliers="1",
+            # profiles/wan_i2v/Image2Video FusioniX - 10 Steps.json
+            num_inference_steps=10,
+            guidance_phases=1,
+            guidance_scale=1,
+            sliding_window_size=MOTION_WINDOWS[ANIMATE_MODEL][0],
+        )
+    else:
+        settings.update(image_prompt_type="T", video_prompt_type="UVI")
+    return settings
 
 
 def ideas_instructions(seconds=5):
