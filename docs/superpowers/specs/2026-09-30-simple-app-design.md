@@ -229,9 +229,9 @@ python simple_app.py --check-motion <ảnh> <video>
 
 | File | Dung lượng |
 |---|---|
-| `ckpts/wan2.2_animate_14B_quanto_bf16_int8.safetensors` | 16.7 GB |
 | `ckpts/wan2.2_animate_relighting_lora.safetensors` | 2.7 GB |
-| `loras/wan_i2v/Wan2.1_I2V_14B_FusionX_LoRA.safetensors` | 354 MB |
+
+Từ v2 ([spec 2026-10-01](2026-10-01-simple-app-v2-design.md)), `ckpts/wan2.2_animate_14B_quanto_bf16_int8.safetensors` và `loras/wan_i2v/Wan2.1_I2V_14B_FusionX_LoRA.safetensors` được Motion Control dùng, không còn là ứng viên xóa.
 
 ## Tham khảo
 

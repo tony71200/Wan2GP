@@ -53,3 +53,5 @@ plugins_local.json
 /plugins/wangp-*/
 loras_url_cache.json
 loras_url_cache_v2.json
+
+simple_app_timings.json
