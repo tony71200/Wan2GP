@@ -247,5 +247,7 @@ Mockup người dùng: `C:\Users\tonyn\Downloads\Wangp (1).zip` (3 SVG).
 | Việc | Kết quả |
 |---|---|
 | `--check-reel` Ryo 15 s, `480x832`, SVI 2 Pro 3 cửa sổ × 8 bước, Mượt x2 | 15.09 s (483 frame @ 32 fps); tổng 36 phút 34 giây gồm cả Qwen viết prompt (ước tính trước khi hiệu chỉnh 35 phút); khoảng 74–79 giây/bước. Mặt: giây 5–10 máy đẩy sát mặt theo prompt, tóc ướt và dựng hơn ảnh gốc; giây 15 về khung gần ảnh gốc, giống người nhưng chưa sát hoàn toàn. |
+| `--check-motion` Animate 14B + FusionX, 5 s, `480x832`, 1 cửa sổ 81 frame | 5.06 s (81 frame @ 16 fps); tổng 17 phút 6 giây, khử nhiễu 14 phút 33 giây, 87 giây/bước (quy về mốc 65 frame `480x848`: 71 giây/bước, lệch 24% so với 94 đang mượn, giữ nguyên và để calib bù). Hai nhân vật, trang phục, bối cảnh giữ đúng ảnh gốc. |
+| `--check-motion` Animate 2, đủ 27.1 s, 433 frame, 7 cửa sổ, `480x832` | 27.06 s (433 frame @ 16 fps) so với video mẫu 27.10 s; tổng 1 giờ 50 phút 12 giây (ước tính 1 giờ 44 phút), khoảng 91–94 giây/bước. Mặt, trang phục, bối cảnh giữ nguyên tới giây 27; hình xăm của người áo đỏ lan sang cả hai tay từ khoảng giây 18. |
 
 `[/duration=Ns]` bị Wan2GP gỡ khỏi prompt trước khi mã hóa (`shared/utils/frame_scheduler.py:141`); marker chỉ còn trong tên file và metadata.
