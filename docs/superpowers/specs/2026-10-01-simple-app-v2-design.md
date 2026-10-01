@@ -216,7 +216,7 @@ python simple_app.py --check-motion "D:\...\motionControl\day_27_1\Klein_I2I_260
 ```
 
 - `--check-reel <ảnh> [giây]` (mặc định 5): tự viết prompt N giây rồi sinh; mong đợi 15.0 s (ảnh 968×1216 → `480x832`), khoảng 35 phút.
-- `--check-motion <ảnh> <video> [animate2|animate]`: toàn bộ video mẫu; mong đợi 27.06 s so với 27.10 s, khoảng 1.8 giờ, chạy sau cùng.
+- `--check-motion <ảnh> <video> [animate2|animate] [giây]`: mặc định toàn bộ video mẫu; mong đợi 27.06 s so với 27.10 s, khoảng 1.8 giờ, chạy sau cùng. Thêm `[giây]` để chạy thử ngắn (dùng cho Animate 14B).
 - Harness Multi: viết sau khi người dùng có bộ ảnh mẫu.
 
 Chạy tay: mở app, kiểm tra bố cục ba tab, dialog Hướng dẫn, checkbox giới hạn bật/tắt thanh, thêm/xóa ảnh ở Multi, Upscale một video.
@@ -241,3 +241,11 @@ Trong repo:
 - `wangp-agent/SKILL.md`: luật khi gọi Wan2GP.
 
 Mockup người dùng: `C:\Users\tonyn\Downloads\Wangp (1).zip` (3 SVG).
+
+## Kết quả đo
+
+| Việc | Kết quả |
+|---|---|
+| `--check-reel` Ryo 15 s, `480x832`, SVI 2 Pro 3 cửa sổ × 8 bước, Mượt x2 | 15.09 s (483 frame @ 32 fps); tổng 36 phút 34 giây gồm cả Qwen viết prompt (ước tính trước khi hiệu chỉnh 35 phút); khoảng 74–79 giây/bước. Mặt: giây 5–10 máy đẩy sát mặt theo prompt, tóc ướt và dựng hơn ảnh gốc; giây 15 về khung gần ảnh gốc, giống người nhưng chưa sát hoàn toàn. |
+
+`[/duration=Ns]` bị Wan2GP gỡ khỏi prompt trước khi mã hóa (`shared/utils/frame_scheduler.py:141`); marker chỉ còn trong tên file và metadata.

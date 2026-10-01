@@ -807,24 +807,35 @@ def run_check(session, flag, args):
     def generate(settings, label):
         result = session.submit_task(settings).result()
         assert result.success and result.generated_files, [str(e) for e in result.errors]
-        print(f"{label}:", result.generated_files[-1])
+        path = result.generated_files[-1]
+        print(f"{label}:", path)
+        return path
+
+    def check_duration(path, expected):
+        fps, total = _video_info(path)
+        got = total / fps
+        print(f"duration {got:.2f}s ({total} frames @ {fps:g} fps), expected {expected:.2f}s")
+        assert abs(got - expected) <= 0.2, "wrong duration"
 
     if flag in ("--check-enhancer", "--check-reel"):
-        (image,) = args
+        image, *rest = args
+        seconds = int(rest[0]) if rest else 5
         print("enhancer_enabled =", sys.modules["wgp"].server_config.get("enhancer_enabled", 0))
-        ideas = parse_ideas(enhance(session, "", "Suggest short video ideas for this image.", image, ideas_instructions()))
+        ideas = parse_ideas(enhance(session, "", "Suggest short video ideas for this image.", image, ideas_instructions(seconds)))
         print("IDEAS:", ideas)
         assert ideas, "no ideas returned"
-        detail = enhance(session, "", ideas[0], image, detail_instructions())
+        detail = enhance(session, "", ideas[0], image, detail_instructions(seconds))
         print("DETAIL:", detail)
         assert detail.strip(), "empty detailed prompt"
         print("enhancer check ok")
         if flag == "--check-reel":
             w, h = _image_size(image)
-            generate(reels_settings(
-                session.get_default_settings(REELS_MODEL),
-                image=image, prompt=detail, resolution=pick_resolution(w, h), seconds=5, seed=-1,
+            model, _ = reel_plan(seconds)
+            out = generate(reels_settings(
+                session.get_default_settings(model),
+                image=image, prompt=detail, resolution=pick_resolution(w, h), seconds=seconds, seed=-1,
             ), "REEL")
+            check_duration(out, seconds)
     elif flag == "--check-extend":
         video, image, *prompt_words = args
         w, h = _image_size(image)
@@ -833,13 +844,16 @@ def run_check(session, flag, args):
             video=video, anchor=image, prompt=" ".join(prompt_words), resolution=pick_resolution(w, h), seconds=2, seed=-1,
         ), "EXTENDED")
     elif flag == "--check-motion":
-        image, video = args
+        image, video, *rest = args
+        model = ANIMATE_MODEL if rest and rest[0] == "animate" else MOTION_MODEL
+        limit = float(rest[1]) if len(rest) > 1 else None
         fps, total = _video_info(video)
         w, h = _image_size(image)
-        generate(motion_settings(
-            session.get_default_settings(MOTION_MODEL), image=image, video=video, description="",
-            resolution=pick_resolution(w, h), frames=round_frames(min(total, 5 * fps)), seed=-1,
+        out = generate(motion_settings(
+            session.get_default_settings(model), image=image, video=video, description="",
+            resolution=pick_resolution(w, h), frames=motion_frames(fps, total, limit), seed=-1, model=model,
         ), "MOTION")
+        check_duration(out, min(limit, total / fps) if limit else total / fps)
     else:
         raise SystemExit(f"unknown check: {flag}")
 
