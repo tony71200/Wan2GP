@@ -1,4 +1,5 @@
 """Simple Reels + Motion Control app on top of Wan2GP (shared.api)."""
+import json
 import re
 import sys
 from pathlib import Path
@@ -223,6 +224,53 @@ def aspect_mismatch(sizes, tolerance=0.1):
         return []
     ref = sizes[0][0] / sizes[0][1]
     return [i for i, size in enumerate(sizes[1:], 2) if size and abs(size[0] / size[1] / ref - 1) > tolerance]
+
+
+# (steps, seconds per step, reference frames, reference pixels), measured 2026-09-30 on the RTX 5070 Ti Laptop 12 GB
+SPEED = {
+    REELS_MODEL: (4, 97, 81, 720 * 720),
+    EXTEND_MODEL: (8, 106, 81, 720 * 720),
+    MOTION_MODEL: (10, 94, 65, 480 * 848),
+    ANIMATE_MODEL: (10, 94, 65, 480 * 848),  # not measured yet: borrowed from Animate 2, calibration corrects it
+}
+LOAD_SECONDS = 120  # model load + VAE decode
+MODEL_LABELS = {REELS_MODEL: "Lightning v2", EXTEND_MODEL: "SVI 2 Pro", MOTION_MODEL: "Animate 2", ANIMATE_MODEL: "Animate 14B"}
+TIMINGS = ROOT / "simple_app_timings.json"
+
+
+def estimate_seconds(model, windows, resolution, calib=None):
+    """Expected wall time of a job; `windows` lists the frame count of each sliding window."""
+    steps, per_step, ref_frames, ref_pixels = SPEED[model]
+    w, h = (int(v) for v in resolution.split("x"))
+    # ponytail: linear in frames x pixels (attention grows faster); the calibration ratio absorbs the error for usual sizes
+    work = sum(windows) * w * h / (ref_frames * ref_pixels)
+    return (LOAD_SECONDS + steps * per_step * work) * (calib or {}).get(model, 1.0)
+
+
+def fmt_minutes(seconds):
+    minutes = max(1, round(seconds / 60))
+    return f"{minutes} phút" if minutes < 60 else f"{minutes // 60} giờ {minutes % 60} phút"
+
+
+def eta_text(model, windows, resolution, calib=None):
+    steps = SPEED[model][0]
+    eta = fmt_minutes(estimate_seconds(model, windows, resolution, calib))
+    return f"⏱ ≈ {eta} ({MODEL_LABELS[model]} · {len(windows)} cửa sổ × {steps} bước)"
+
+
+def load_calib(path=TIMINGS):
+    """Per-model ratio actual / estimated time from previous runs; {} when missing or unreadable."""
+    try:
+        return json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def save_calib(model, actual, raw_estimate, path=TIMINGS):
+    calib = load_calib(path)
+    calib[model] = round(actual / raw_estimate, 3)
+    Path(path).write_text(json.dumps(calib, indent=1))
+    return calib
 
 
 # The model's own default prompt describes a demo character (a cat in a school uniform), so never fall back to it.

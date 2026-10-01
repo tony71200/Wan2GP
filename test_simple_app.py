@@ -5,6 +5,7 @@ from simple_app import (
     reel_plan, reel_windows, split_timeline, ideas_instructions, detail_instructions,
     multi_settings, aspect_mismatch, MAX_IMAGES,
     ANIMATE_MODEL, FUSIONX_LORA, MOTION_MODELS, MOTION_WINDOWS, motion_frames, sliding_windows,
+    estimate_seconds, fmt_minutes, eta_text, load_calib, save_calib,
 )
 
 
@@ -229,6 +230,41 @@ def test_aspect_mismatch():
     assert aspect_mismatch([(1000, 1250), (800, 1000), (1000, 1000), None, (1080, 1920)]) == [3, 5]
     assert aspect_mismatch([None, (1000, 1000)]) == []
     assert aspect_mismatch([]) == []
+
+
+def test_estimate_seconds():
+    assert estimate_seconds(REELS_MODEL, [81], "720x720") == 120 + 4 * 97
+    assert estimate_seconds(REELS_MODEL, [81], "720x720", {REELS_MODEL: 2}) == 2 * (120 + 4 * 97)
+    assert estimate_seconds(REELS_MODEL, [81], "720x720", {EXTEND_MODEL: 2}) == 120 + 4 * 97
+    assert estimate_seconds(EXTEND_MODEL, [81, 81], "720x720") == 120 + 2 * 8 * 106
+    assert estimate_seconds(MOTION_MODEL, [65], "480x848") == 120 + 10 * 94
+    assert estimate_seconds(ANIMATE_MODEL, [65], "480x848") == 120 + 10 * 94
+    assert estimate_seconds(REELS_MODEL, [81], "960x960") > estimate_seconds(REELS_MODEL, [81], "720x720")
+
+
+def test_fmt_minutes():
+    assert fmt_minutes(419) == "7 phút"
+    assert fmt_minutes(10) == "1 phút"
+    assert fmt_minutes(6266) == "1 giờ 44 phút"
+
+
+def test_eta_text():
+    assert eta_text(EXTEND_MODEL, [81, 81, 81], "480x832") == "⏱ ≈ 35 phút (SVI 2 Pro · 3 cửa sổ × 8 bước)"
+    assert eta_text(REELS_MODEL, [81], "480x832") == "⏱ ≈ 7 phút (Lightning v2 · 1 cửa sổ × 4 bước)"
+
+
+def test_calib_roundtrip():
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "timings.json"
+        assert load_calib(p) == {}
+        assert save_calib(REELS_MODEL, 1000, 500, p) == {REELS_MODEL: 2.0}
+        assert save_calib(MOTION_MODEL, 300, 400, p) == {REELS_MODEL: 2.0, MOTION_MODEL: 0.75}
+        assert load_calib(p) == {REELS_MODEL: 2.0, MOTION_MODEL: 0.75}
+        p.write_text("not json")
+        assert load_calib(p) == {}
 
 
 if __name__ == "__main__":
