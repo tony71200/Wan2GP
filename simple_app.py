@@ -382,15 +382,73 @@ def _video_info(path):
     return fps, total
 
 
+CSS = """
+.gradio-container { background: #F9BE7E !important; }
+#header { background: #F9A710; padding: 8px 16px; border-radius: 10px; align-items: center; }
+#header h2 { margin: 0; font-family: monospace; }
+#guide { display: none; position: fixed; inset: 5vh 10vw; z-index: 1000; background: white; border-radius: 12px;
+         box-shadow: 0 10px 40px rgba(0, 0, 0, .35); padding: 20px; overflow: auto; }
+"""
+# The orange palette is designed for light mode; Gradio otherwise follows the OS theme.
+FORCE_LIGHT = "() => document.body.classList.remove('dark')"
+
+GUIDE = """
+## Hướng dẫn sử dụng
+
+### Reels: một ảnh → video 2–15 giây
+- **Từ 5 giây trở xuống**: Wan 2.2 i2v *Enhanced Lightning v2*, 4 bước, một cửa sổ.
+- **Trên 5 giây**: *SVI 2 Pro* (cùng model, thêm LoRA SVI), 8 bước mỗi cửa sổ, chia thành các cửa sổ tối đa 5 giây trong **một job**. Mọi cửa sổ neo về ảnh gốc nên nhân vật không trôi.
+- Prompt có mốc giây như `(at 3 seconds: …)` hoặc `(0-2 seconds: …)` được tự tách cho từng cửa sổ. Dòng không có mốc (mô tả nhân vật) được giữ ở mọi cửa sổ.
+- **3 ý tưởng / Viết chi tiết**: Qwen3.5-4B (có thị giác) đọc ảnh rồi viết prompt theo từng giây của thời lượng đang chọn.
+- **Kéo dài video**: nối thêm một đoạn bằng SVI 2 Pro, neo về ảnh gốc.
+
+### Reels Multi Image: tối đa 6 ảnh của cùng một nhân vật
+Mỗi ảnh là một mốc. Đoạn của ảnh *i* bắt đầu ở ảnh *i*, dài đúng số giây ghi trên ảnh đó và kết thúc ở ảnh *i+1*. Đoạn của ảnh cuối chạy tự do. Mô tả nhân vật chung được ghép vào đầu prompt của mọi đoạn. Độ phân giải theo ảnh 1.
+
+### Motion Control
+Nhân vật trong ảnh làm theo chuyển động của video mẫu. Video ra dài **đúng bằng video mẫu**, trừ khi tick *Giới hạn thời lượng*. Video mẫu được đưa về 16 fps để chạy nhanh gấp đôi; bật *Mượt x2* để ra 32 fps.
+- **Animate 2 distilled**: 10 bước, cửa sổ 65 frame.
+- **Wan 2.2 Animate 14B**: thêm LoRA FusionX, 10 bước, cửa sổ 81 frame.
+
+### Pha đầu và Pha cuối
+Wan 2.2 khử nhiễu bằng **hai model nối tiếp**:
+- **Pha đầu (high noise)**: các bước đầu, quyết định **bố cục và chuyển động lớn**.
+- **Pha cuối (low noise)**: các bước sau, quyết định **chi tiết: mặt, da, tóc, vải**.
+
+Hai thanh trượt là cường độ LoRA trong từng pha. Để **Pha cuối = 0** thì LoRA chỉ tác động lên chuyển động, khuôn mặt giữ theo ảnh gốc. File LoRA có chữ `high` chỉ chạy ở pha đầu, file có chữ `low` chỉ chạy ở pha cuối.
+
+### Thời gian ước tính
+Tính từ số đo trên RTX 5070 Ti Laptop 12 GB. Sau mỗi lần chạy, app ghi thời gian thật vào `simple_app_timings.json` để lần sau ước tính sát hơn.
+
+### Upscale ×2
+Phóng to video đang hiển thị gấp đôi bằng Lanczos: nhanh, không thêm chi tiết.
+
+### LoRA tải thêm
+Tải **cả cặp** high/low vào `loras/wan`, chọn cả hai file trong ô LoRA, để Pha cuối = 0.
+- [lkzd7/WAN2.2_LoraSet_NSFW](https://huggingface.co/lkzd7/WAN2.2_LoraSet_NSFW): 48 file, phần lớn là cặp high/low.
+- [Lythiga/WAN2.2_I2V_Lora](https://huggingface.co/Lythiga/WAN2.2_I2V_Lora)
+- [rolechar/rc_wan2.2_i2v_loraset_nsfw_private](https://huggingface.co/rolechar/rc_wan2.2_i2v_loraset_nsfw_private): riêng tư, cần `HF_TOKEN`.
+- [lopi999/Wan2.2-I2V_General-NSFW-LoRA](https://huggingface.co/lopi999/Wan2.2-I2V_General-NSFW-LoRA): cặp `NSFW-22-H-e8` / `NSFW-22-L-e8`.
+
+### Nguồn model
+- [DeepBeepMeep/Wan2.2](https://huggingface.co/DeepBeepMeep/Wan2.2): Enhanced Lightning v2, LoRA SVI 2 Pro, Animate 2, Wan 2.2 Animate 14B
+- [DeepBeepMeep/Wan2.1](https://huggingface.co/DeepBeepMeep/Wan2.1): RIFE, LoRA FusionX
+- [Enhanced Lightning v2 (civitai)](https://civitai.com/models/2053259)
+- [Wan2GP](https://github.com/deepbeepmeep/Wan2GP)
+"""
+
+
 def build_ui(session):
     import contextvars
+    import time
 
     import gradio as gr
     from shared.api import create_gradio_progress_callbacks
 
     active = {"job": None}
 
-    def run(settings, progress):
+    def run(submit, progress):
+        """submit(callbacks) -> job. Returns the last generated file, or None when cancelled."""
         # Wan2GP fires callbacks on its job thread, where Gradio has no event context and would drop the updates
         ctx = contextvars.copy_context()
         inner = create_gradio_progress_callbacks(progress)
@@ -403,7 +461,7 @@ def build_ui(session):
                 ctx.run(inner.on_progress, update)
 
         try:
-            job = session.submit_task(settings, callbacks=Callbacks())
+            job = submit(Callbacks())
         except RuntimeError as e:
             raise gr.Error(str(e))
         active["job"] = job
@@ -417,29 +475,77 @@ def build_ui(session):
             return None
         raise gr.Error(str(result.errors[0]) if result.errors else "Wan2GP không trả về file nào.")
 
+    def generate(settings, windows, progress):
+        """Run a generation job and record actual / estimated time for its model. Returns (video, took_text)."""
+        model = settings["model_type"]
+        start = time.monotonic()
+        video = run(lambda cb: session.submit_task(settings, callbacks=cb), progress)
+        if video is None:
+            return None, ""
+        took = time.monotonic() - start
+        save_calib(model, took, estimate_seconds(model, windows, settings["resolution"]))
+        return video, f"Thực tế: {fmt_minutes(took)}"
+
     def cancel():
         job = active["job"]
         if job is not None and not job.done:
             job.cancel()
 
+    def upscale(video, progress=gr.Progress()):
+        if not video:
+            raise gr.Error("Chưa có video.")
+        out = run(lambda cb: session.submit_media_postprocessing(video, spatial_upsampling="lanczos*2", callbacks=cb), progress)
+        return out or gr.update()
+
+    def lora_names():
+        return session.list_loras(REELS_MODEL)["loras"]
+
     def lora_choices():
-        return gr.update(choices=session.list_loras(REELS_MODEL)["loras"])
+        return gr.update(choices=lora_names())
+
+    def results(extend=False):
+        """Right column of a tab: actions, estimate, video, timing, follow-up buttons."""
+        with gr.Row():
+            cancel_btn = gr.Button("Hủy")
+            go = gr.Button("Tạo Video", variant="primary")
+        eta = gr.Markdown()
+        video = gr.Video(label="Video ra", autoplay=True)
+        took = gr.Markdown()
+        with gr.Row():
+            ext = gr.Button("Kéo dài video (neo ảnh gốc)", interactive=False) if extend else None
+            up = gr.Button("Upscale ×2", interactive=False)
+        cancel_btn.click(cancel, queue=False)
+        up.click(upscale, video, video)
+        return go, eta, video, took, ext, up
+
+    def image_resolution(image, quality):
+        return pick_resolution(*_image_size(image), quality) if image else RESOLUTIONS[quality][0]
+
+    # ---------- Reels ----------
+    def reel_status(image, seconds, quality):
+        info = ""
+        if image:
+            w, h = _image_size(image)
+            info = f"**{Path(image).name}** · gốc {w}×{h} → video {pick_resolution(w, h, quality)}"
+        model, windows = reel_windows(seconds)
+        return info, eta_text(model, windows, image_resolution(image, quality), load_calib())
 
     def make_reel(image, prompt, seconds, quality, smooth, loras, high, low, seed, progress=gr.Progress()):
         if not image:
             raise gr.Error("Chưa có ảnh đầu vào.")
         if not (prompt or "").strip():
             raise gr.Error("Chưa có prompt.")
-        w, h = _image_size(image)
+        model, windows = reel_windows(seconds)
         settings = reels_settings(
-            session.get_default_settings(REELS_MODEL),
-            image=image, prompt=prompt, resolution=pick_resolution(w, h, quality),
+            session.get_default_settings(model),
+            image=image, prompt=prompt, resolution=image_resolution(image, quality),
             seconds=seconds, seed=seed, loras=loras, high=high, low=low, smooth=smooth,
         )
-        video = run(settings, progress)
+        video, took = generate(settings, windows, progress)
         if video is None:
-            return gr.update(), gr.update(), gr.update()
-        return video, {"video": video, "image": image, "resolution": settings["resolution"]}, gr.update(interactive=True)
+            return gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+        last = {"video": video, "image": image, "resolution": settings["resolution"]}
+        return video, last, gr.update(interactive=True), gr.update(interactive=True), took
 
     def extend_reel(last, prompt, seconds, smooth, loras, high, low, seed, progress=gr.Progress()):
         if not last:
@@ -449,14 +555,96 @@ def build_ui(session):
         settings = extend_settings(
             session.get_default_settings(EXTEND_MODEL),
             video=last["video"], anchor=last["image"], prompt=prompt, resolution=last["resolution"],
-            seconds=seconds, seed=seed, loras=loras, high=high, low=low, smooth=smooth,
+            seconds=min(seconds, 5), seed=seed, loras=loras, high=high, low=low, smooth=smooth,
         )
-        video = run(settings, progress)
+        video, took = generate(settings, [settings["video_length"]], progress)
         if video is None:
-            return gr.update(), gr.update()
-        return video, {**last, "video": video}
+            return gr.update(), gr.update(), gr.update()
+        return video, {**last, "video": video}, took
 
-    def make_motion(image, video, description, limit, quality, seed, progress=gr.Progress()):
+    def suggest_ideas(image, hint, seconds, progress=gr.Progress()):
+        if not image:
+            raise gr.Error("Chưa có ảnh đầu vào.")
+        if active["job"] is not None:
+            raise gr.Error("Đang tạo video, chờ xong rồi gợi ý.")
+        text = (hint or "").strip() or "Suggest short video ideas for this image."
+        ideas = parse_ideas(enhance(session, "", text, image, ideas_instructions(int(seconds)), progress))
+        if not ideas:
+            raise gr.Error("Không nhận được ý tưởng nào, thử lại.")
+        return gr.update(choices=ideas, value=None)
+
+    def write_detail(image, hint, seconds, progress=gr.Progress()):
+        if not image:
+            raise gr.Error("Chưa có ảnh đầu vào.")
+        if not (hint or "").strip():
+            raise gr.Error("Nhập ý ngắn hoặc chọn một ý tưởng trước.")
+        if active["job"] is not None:
+            raise gr.Error("Đang tạo video, chờ xong rồi gợi ý.")
+        return enhance(session, "", hint.strip(), image, detail_instructions(int(seconds)), progress)
+
+    # ---------- Reels Multi Image ----------
+    def multi_status(n, quality, *vals):
+        images, durations = vals[:n], vals[MAX_IMAGES:MAX_IMAGES + n]
+        count = f"**{n}/{MAX_IMAGES} ảnh · tổng {sum(durations):g} giây**"
+        eta = eta_text(REELS_MODEL, [int(d) * FPS + 1 for d in durations], image_resolution(images[0], quality), load_calib())
+        off = aspect_mismatch([_image_size(im) if im else None for im in images])
+        if off:
+            eta += f"\n\n⚠ Ảnh {', '.join(map(str, off))} lệch tỉ lệ khung với ảnh 1 hơn 10%: Wan2GP sẽ co và cắt."
+        return count, eta
+
+    def multi_add(n):
+        n = min(MAX_IMAGES, n + 1)
+        return [n] + [gr.update(visible=i < n) for i in range(MAX_IMAGES)]
+
+    def multi_remove(index):
+        def remove(n, *vals):
+            images, durations, prompts = list(vals[:MAX_IMAGES]), list(vals[MAX_IMAGES:2 * MAX_IMAGES]), list(vals[2 * MAX_IMAGES:])
+            for values, blank in ((images, None), (durations, 3), (prompts, "")):
+                del values[index]
+                values.append(blank)
+            n = max(1, n - 1)
+            return [n, *images, *durations, *prompts] + [gr.update(visible=i < n) for i in range(MAX_IMAGES)]
+
+        return remove
+
+    # progress must come before *vals: Gradio only injects gr.Progress into positional parameters
+    def make_multi(n, common, quality, smooth, loras, high, low, seed, progress=gr.Progress(), *vals):
+        images = list(vals[:n])
+        durations = [int(d) for d in vals[MAX_IMAGES:MAX_IMAGES + n]]
+        prompts = list(vals[2 * MAX_IMAGES:2 * MAX_IMAGES + n])
+        if not all(images):
+            raise gr.Error("Ô ảnh nào đang hiện cũng phải có ảnh.")
+        if not (common or "").strip() and not all((p or "").strip() for p in prompts):
+            raise gr.Error("Mỗi ảnh cần prompt riêng, hoặc điền Mô tả nhân vật chung.")
+        settings = multi_settings(
+            session.get_default_settings(REELS_MODEL),
+            images=images, durations=durations, prompts=prompts, common=common,
+            resolution=image_resolution(images[0], quality), seed=seed, loras=loras, high=high, low=low, smooth=smooth,
+        )
+        video, took = generate(settings, [d * FPS + 1 for d in durations], progress)
+        if video is None:
+            return gr.update(), gr.update(), gr.update()
+        return video, gr.update(interactive=True), took
+
+    # ---------- Motion Control ----------
+    def motion_info(video):
+        if not video:
+            return "", gr.update()
+        fps, total = _video_info(video)
+        seconds = total / fps
+        info = f"**Video mẫu:** {seconds:.1f} giây · {fps:g} fps → {motion_frames(fps, total)} frame ở {FPS} fps"
+        return info, gr.update(maximum=max(1, min(15, int(seconds))))
+
+    def motion_eta(image, video, limit_on, limit, quality, label):
+        if not video:
+            return "⏱ Chọn video mẫu để ước tính."
+        model = MOTION_MODELS[label]
+        fps, total = _video_info(video)
+        frames = motion_frames(fps, total, limit if limit_on else None)
+        windows = sliding_windows(frames, *MOTION_WINDOWS[model])
+        return eta_text(model, windows, image_resolution(image, quality), load_calib())
+
+    def make_motion(image, video, description, limit_on, limit, quality, smooth, label, seed, progress=gr.Progress()):
         if not image:
             raise gr.Error("Chưa có ảnh nhân vật.")
         if not video:
@@ -464,102 +652,152 @@ def build_ui(session):
         fps, total = _video_info(video)
         if total < 5:
             raise gr.Error("Không đọc được video mẫu.")
-        w, h = _image_size(image)
+        model = MOTION_MODELS[label]
+        frames = motion_frames(fps, total, limit if limit_on else None)
         settings = motion_settings(
-            session.get_default_settings(MOTION_MODEL), image=image, video=video, description=description,
-            resolution=pick_resolution(w, h, quality),
-            frames=round_frames(min(total, limit * fps)), seed=seed,
+            session.get_default_settings(model), image=image, video=video, description=description,
+            resolution=image_resolution(image, quality), frames=frames, seed=seed, model=model, smooth=smooth,
         )
-        out = run(settings, progress)
-        return out if out else gr.update()
+        out, took = generate(settings, sliding_windows(frames, *MOTION_WINDOWS[model]), progress)
+        if out is None:
+            return gr.update(), gr.update(), gr.update()
+        return out, gr.update(interactive=True), took
 
-    def suggest_ideas(image, hint, progress=gr.Progress()):
-        if not image:
-            raise gr.Error("Chưa có ảnh đầu vào.")
-        if active["job"] is not None:
-            raise gr.Error("Đang tạo video, chờ xong rồi gợi ý.")
-        text = (hint or "").strip() or "Suggest short video ideas for this image."
-        ideas = parse_ideas(enhance(session, "", text, image, ideas_instructions(), progress))
-        if not ideas:
-            raise gr.Error("Không nhận được ý tưởng nào, thử lại.")
-        return gr.update(choices=ideas, value=None, visible=True)
-
-    def write_detail(image, hint, progress=gr.Progress()):
-        if not image:
-            raise gr.Error("Chưa có ảnh đầu vào.")
-        if not (hint or "").strip():
-            raise gr.Error("Nhập ý ngắn hoặc chọn một ý tưởng trước.")
-        if active["job"] is not None:
-            raise gr.Error("Đang tạo video, chờ xong rồi gợi ý.")
-        return enhance(session, "", hint.strip(), image, detail_instructions(), progress)
-
-    with gr.Blocks(title="Simple App") as demo:
+    with gr.Blocks(title="Simple App", theme=gr.themes.Soft(primary_hue="orange"), css=CSS, js=FORCE_LIGHT) as demo:
         r_last = gr.State(None)
+        with gr.Row(elem_id="header"):
+            gr.Markdown("## Simple WebApp: Reels and Motion Control")
+            guide_btn = gr.Button("Hướng dẫn", size="sm", scale=0)
+        with gr.Column(elem_id="guide"):
+            gr.Markdown(GUIDE)
+            close_btn = gr.Button("Đóng")
+
         with gr.Tab("Reels"):
             with gr.Row():
-                with gr.Column():
+                with gr.Column(scale=1):
                     r_image = gr.Image(type="filepath", label="Ảnh đầu vào", sources=["upload", "clipboard"])
-                    r_hint = gr.Textbox(label="Ý ngắn", placeholder="cô ấy quay lại và cười")
+                    r_info = gr.Markdown()
+                    r_hint = gr.Textbox(label="Ý ngắn", placeholder="chàng trai thong thả đi đến gần")
                     with gr.Row():
-                        r_ideas_btn = gr.Button("3 ý tưởng")
-                        r_detail_btn = gr.Button("Viết chi tiết")
-                    r_ideas = gr.Radio(choices=[], label="Ý tưởng", visible=False)
-                    r_prompt = gr.Textbox(label="Prompt", lines=5)
-                    r_seconds = gr.Slider(2, 5, value=5, step=1, label="Thời lượng (giây)")
-                    with gr.Row():
-                        r_quality = gr.Radio(["480p", "720p"], value="480p", label="Chất lượng")
+                        r_ideas_btn = gr.Button("3 ý tưởng", scale=0)
+                        r_ideas = gr.Dropdown(choices=[], label="Ý tưởng", scale=2)
+                        r_detail_btn = gr.Button("Viết chi tiết", variant="primary", scale=0)
+                    r_prompt = gr.Textbox(label="Prompt", lines=8)
+                with gr.Column(scale=1):
+                    r_go, r_eta, r_video, r_took, r_extend, r_up = results(extend=True)
+                    with gr.Accordion("Cài đặt nâng cao", open=True):
+                        r_seconds = gr.Slider(2, 15, value=5, step=1, label="Thời lượng video (giây)")
+                        r_quality = gr.Radio(["480p", "720p"], value="480p", label="Độ phân giải")
                         r_smooth = gr.Checkbox(value=True, label="Mượt x2 (32 fps)")
-                    r_loras = gr.Dropdown(choices=session.list_loras(REELS_MODEL)["loras"], multiselect=True, label="LoRA (loras/wan)")
-                    with gr.Row():
-                        r_high = gr.Slider(0, 2, value=1, step=0.1, label="Pha đầu")
-                        r_low = gr.Slider(0, 2, value=0, step=0.1, label="Pha sau")
-                    r_seed = gr.Number(value=-1, precision=0, label="Seed (-1 = ngẫu nhiên)")
-                    with gr.Row():
-                        r_go = gr.Button("Tạo video", variant="primary")
-                        r_cancel = gr.Button("Hủy")
-                with gr.Column():
-                    r_video = gr.Video(label="Video kết quả", autoplay=True)
-                    r_extend = gr.Button("Kéo dài video (neo ảnh gốc)", interactive=False)
+                        r_loras = gr.Dropdown(choices=lora_names(), multiselect=True, label="LoRA (loras/wan)")
+                        with gr.Row():
+                            r_high = gr.Slider(0, 2, value=1, step=0.1, label="Pha đầu (chuyển động)")
+                            r_low = gr.Slider(0, 2, value=0, step=0.1, label="Pha cuối (chi tiết mặt)")
+                        r_seed = gr.Number(value=-1, precision=0, label="Seed (-1 = ngẫu nhiên)")
 
-        with gr.Tab("Motion control"):
+        with gr.Tab("Reels Multi Image"):
+            mm_n = gr.State(2)
+            mm_images, mm_durations, mm_prompts, mm_cards, mm_removes = [], [], [], [], []
             with gr.Row():
-                with gr.Column():
+                with gr.Column(scale=2):
+                    mm_count = gr.Markdown()
+                    mm_common = gr.Textbox(
+                        label="Mô tả nhân vật chung (ghép vào đầu mọi prompt)",
+                        placeholder="a young man with short black hair, white t-shirt, in a sunny park",
+                    )
+                    with gr.Row():
+                        for i in range(MAX_IMAGES):
+                            with gr.Column(visible=i < 2, min_width=220) as card:
+                                mm_images.append(gr.Image(type="filepath", label=f"Ảnh {i + 1}", sources=["upload", "clipboard"], height=220))
+                                mm_durations.append(gr.Slider(1, 5, value=3, step=1, label="Thời lượng đoạn (giây)"))
+                                mm_prompts.append(gr.Textbox(label=f"Prompt {i + 1}", lines=3, placeholder="hành động trong đoạn này"))
+                                mm_removes.append(gr.Button("Xóa", size="sm"))
+                            mm_cards.append(card)
+                    mm_add = gr.Button("+ Thêm ảnh")
+                    with gr.Accordion("Cài đặt nâng cao", open=False):
+                        mm_quality = gr.Radio(["480p", "720p"], value="480p", label="Độ phân giải (theo ảnh 1)")
+                        mm_smooth = gr.Checkbox(value=True, label="Mượt x2 (32 fps)")
+                        mm_loras = gr.Dropdown(choices=lora_names(), multiselect=True, label="LoRA (loras/wan)")
+                        with gr.Row():
+                            mm_high = gr.Slider(0, 2, value=1, step=0.1, label="Pha đầu (chuyển động)")
+                            mm_low = gr.Slider(0, 2, value=0, step=0.1, label="Pha cuối (chi tiết mặt)")
+                        mm_seed = gr.Number(value=-1, precision=0, label="Seed (-1 = ngẫu nhiên)")
+                with gr.Column(scale=1):
+                    mm_go, mm_eta, mm_video, mm_took, _, mm_up = results()
+
+        with gr.Tab("Motion Control"):
+            with gr.Row():
+                with gr.Column(scale=2):
                     with gr.Row():
                         m_image = gr.Image(type="filepath", label="Ảnh nhân vật", sources=["upload", "clipboard"])
-                        m_video = gr.Video(label="Video mẫu", sources=["upload"])
+                        m_video = gr.Video(label="Video tham chiếu", sources=["upload"])
+                    m_info = gr.Markdown()
                     m_desc = gr.Textbox(
-                        label="Mô tả nhân vật (không bắt buộc)", lines=2,
+                        label="Mô tả nhân vật, bối cảnh (không bắt buộc)", lines=2,
                         placeholder="Character appearance: ... Background: ...",
                     )
-                    m_limit = gr.Slider(2, 10, value=5, step=1, label="Giới hạn thời lượng (giây)")
-                    m_quality = gr.Radio(["480p", "720p"], value="480p", label="Chất lượng")
-                    m_seed = gr.Number(value=-1, precision=0, label="Seed (-1 = ngẫu nhiên)")
+                    with gr.Accordion("Cài đặt nâng cao", open=True):
+                        with gr.Row():
+                            m_limit_on = gr.Checkbox(value=False, label="Giới hạn thời lượng", scale=0)
+                            m_limit = gr.Slider(1, 15, value=5, step=1, label="Thời lượng (giây, cắt từ đầu video mẫu)", interactive=False)
+                        m_quality = gr.Radio(["480p", "720p"], value="480p", label="Độ phân giải")
+                        m_smooth = gr.Checkbox(value=True, label="Mượt x2 (16 → 32 fps)")
+                        m_model = gr.Dropdown(list(MOTION_MODELS), value="Animate 2 distilled", label="Chọn Model")
+                        m_seed = gr.Number(value=-1, precision=0, label="Seed (-1 = ngẫu nhiên)")
                     if not session.get_model_availability(MOTION_MODEL)["available"]:
-                        gr.Markdown("Lần đầu sẽ tải model Animate 2 (17 GB).")
-                    with gr.Row():
-                        m_go = gr.Button("Tạo video", variant="primary")
-                        m_cancel = gr.Button("Hủy")
-                with gr.Column():
-                    m_out = gr.Video(label="Video kết quả", autoplay=True)
-                    gr.Markdown("Nhân vật luôn tham chiếu ảnh gốc ở mọi đoạn.")
+                        gr.Markdown("Lần đầu dùng Animate 2 sẽ tải model (17 GB).")
+                with gr.Column(scale=1):
+                    m_go, m_eta, m_out, m_took, _, m_up = results()
 
+        # purely visual toggle: run it in the browser, no server round trip
+        guide_btn.click(None, js="() => { document.getElementById('guide').style.display = 'flex'; }")
+        close_btn.click(None, js="() => { document.getElementById('guide').style.display = 'none'; }")
+
+        reel_in = [r_image, r_seconds, r_quality]
+        for comp in reel_in:
+            comp.change(reel_status, reel_in, [r_info, r_eta])
+        demo.load(reel_status, reel_in, [r_info, r_eta])
         r_loras.focus(lora_choices, outputs=r_loras)
-        r_ideas_btn.click(suggest_ideas, [r_image, r_hint], r_ideas)
+        r_ideas_btn.click(suggest_ideas, [r_image, r_hint, r_seconds], r_ideas)
         r_ideas.change(lambda idea: idea or gr.update(), r_ideas, r_hint)
-        r_detail_btn.click(write_detail, [r_image, r_hint], r_prompt)
+        r_detail_btn.click(write_detail, [r_image, r_hint, r_seconds], r_prompt)
         r_go.click(
             make_reel,
             [r_image, r_prompt, r_seconds, r_quality, r_smooth, r_loras, r_high, r_low, r_seed],
-            [r_video, r_last, r_extend],
+            [r_video, r_last, r_extend, r_up, r_took],
         )
         r_extend.click(
             extend_reel,
             [r_last, r_prompt, r_seconds, r_smooth, r_loras, r_high, r_low, r_seed],
-            [r_video, r_last],
+            [r_video, r_last, r_took],
         )
-        r_cancel.click(cancel, queue=False)
-        m_go.click(make_motion, [m_image, m_video, m_desc, m_limit, m_quality, m_seed], m_out)
-        m_cancel.click(cancel, queue=False)
+
+        slots = [*mm_images, *mm_durations, *mm_prompts]
+        status_in = [mm_n, mm_quality, *mm_images, *mm_durations]
+        for comp in (*mm_images, *mm_durations, mm_quality):
+            comp.change(multi_status, status_in, [mm_count, mm_eta])
+        demo.load(multi_status, status_in, [mm_count, mm_eta])
+        mm_add.click(multi_add, mm_n, [mm_n, *mm_cards]).then(multi_status, status_in, [mm_count, mm_eta])
+        for i, rm in enumerate(mm_removes):
+            rm.click(multi_remove(i), [mm_n, *slots], [mm_n, *slots, *mm_cards]).then(multi_status, status_in, [mm_count, mm_eta])
+        mm_loras.focus(lora_choices, outputs=mm_loras)
+        mm_go.click(
+            make_multi,
+            [mm_n, mm_common, mm_quality, mm_smooth, mm_loras, mm_high, mm_low, mm_seed, *slots],
+            [mm_video, mm_up, mm_took],
+        )
+
+        m_limit_on.change(lambda on: gr.update(interactive=on), m_limit_on, m_limit)
+        m_video.change(motion_info, m_video, [m_info, m_limit])
+        motion_in = [m_image, m_video, m_limit_on, m_limit, m_quality, m_model]
+        for comp in motion_in:
+            comp.change(motion_eta, motion_in, m_eta)
+        demo.load(motion_eta, motion_in, m_eta)
+        m_go.click(
+            make_motion,
+            [m_image, m_video, m_desc, m_limit_on, m_limit, m_quality, m_smooth, m_model, m_seed],
+            [m_out, m_up, m_took],
+        )
     return demo
 
 

@@ -154,7 +154,7 @@ Hàm thuần `multi_settings(defaults, *, images, durations, prompts, common, re
 
 ### Giao diện
 
-Ảnh nhân vật, Video tham chiếu, thẻ chỉ đọc `27.1 giây · 30 fps · 720×1280 → 433 frame ở 16 fps`, mô tả nhân vật (không bắt buộc). Cài đặt nâng cao:
+Ảnh nhân vật, Video tham chiếu, thẻ chỉ đọc `27.1 giây · 30 fps → 433 frame ở 16 fps`, mô tả nhân vật (không bắt buộc). Cài đặt nâng cao:
 
 - Checkbox **Giới hạn thời lượng** (mặc định tắt). Thanh 1 → min(15, độ dài video mẫu) giây **chỉ bật khi tick**; cắt từ đầu video mẫu.
 - 480p/720p, Smooth x2 (16 → 32 fps), Seed.
