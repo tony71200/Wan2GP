@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parent
 REELS_MODEL = "i2v_2_2_Enhanced_Lightning_v2"
 EXTEND_MODEL = "i2v_2_2_Enhanced_Lightning_v2_svi2pro"
 MOTION_MODEL = "animate2_distilled"
+FPS = 16  # Wan 2.2 i2v output rate; Motion Control resamples the driving video to it
 
 # quality -> (portrait, square, landscape)
 RESOLUTIONS = {
@@ -37,6 +38,62 @@ def round_frames(n):
 def frames_for(seconds, fps=16):
     """Nearest 4k+1 frame count for a duration, clamped to [17, 81]."""
     return min(81, max(17, round((seconds * fps - 1) / 4) * 4 + 1))
+
+
+def reel_plan(seconds):
+    """(model_type, whole-second duration of each window) for a reel of `seconds`."""
+    seconds = int(seconds)
+    if seconds <= 5:
+        return REELS_MODEL, [seconds]
+    count = -(-seconds // 5)  # windows of at most 5 s (81 frames)
+    base, extra = divmod(seconds, count)
+    return EXTEND_MODEL, [base + 1] * extra + [base] * (count - extra)
+
+
+def reel_windows(seconds):
+    """(model_type, frames per window) used for the time estimate."""
+    model, durations = reel_plan(seconds)
+    if model == REELS_MODEL:
+        return model, [frames_for(seconds)]
+    return model, [d * FPS + 1 for d in durations]
+
+
+# "(at 3 seconds: ...)", "(0-2 seconds: ...)", "(from 0 to 2 seconds: ...)", "0-2 giây: ..."
+_TIMED = re.compile(
+    r"^\(?\s*(?:at|from|từ)?\s*(\d+(?:\.\d+)?)\s*(?:(?:-|–|to|đến)\s*(\d+(?:\.\d+)?)\s*)?"
+    r"(?:seconds?|giây|s)\s*:\s*(.*?)\)?$",
+    re.I,
+)
+
+
+def split_timeline(prompt, durations):
+    """One `[/duration=Ns]` paragraph per window; timed lines go to every window they overlap, re-timed from 0."""
+    lines = [line.strip() for line in str(prompt or "").splitlines() if line.strip()]
+    common, timed = [], []
+    for line in lines:
+        m = _TIMED.match(line)
+        if m:
+            timed.append((float(m[1]), float(m[2]) if m[2] else None, m[3].strip()))
+        else:
+            common.append(line)
+    paragraphs, t0 = [], 0
+    for d in durations:
+        t1 = t0 + d
+        body = list(common)
+        hits = 0
+        for start, end, text in timed:
+            if start < t1 and (end if end is not None else start + 1) > t0:
+                hits += 1
+                if end is None:
+                    body.append(f"(at {start - t0:g} seconds: {text})")
+                else:
+                    body.append(f"({max(start, t0) - t0:g}-{min(end, t1) - t0:g} seconds: {text})")
+        earlier = [text for start, _, text in timed if start < t0]
+        if timed and not hits and earlier:
+            body.append(f"(at 0 seconds: {earlier[-1]})")
+        paragraphs.append(f"[/duration={d}s] " + "\n".join(body))
+        t0 = t1
+    return "\n\n".join(paragraphs)
 
 
 def pair_loras(names, high=1.0, low=0.0):
@@ -71,9 +128,11 @@ def _lora_settings(loras, high, low, smooth):
 
 
 def reels_settings(defaults, *, image, prompt, resolution, seconds, seed, loras=(), high=1.0, low=0.0, smooth=True):
-    return {
+    """Up to 5 s: one Lightning window. Longer: one SVI 2 Pro job, every window anchored on the original image."""
+    model, durations = reel_plan(seconds)
+    settings = {
         **defaults,
-        "model_type": REELS_MODEL,
+        "model_type": model,
         "prompt": prompt,
         "image_prompt_type": "S",
         "image_start": image,
@@ -82,6 +141,15 @@ def reels_settings(defaults, *, image, prompt, resolution, seconds, seed, loras=
         "seed": int(seed),
         **_lora_settings(loras, high, low, smooth),
     }
+    if model == EXTEND_MODEL:
+        settings.update(
+            prompt=split_timeline(prompt, durations),
+            multi_prompts_gen_type="PW",
+            video_prompt_type="KI",
+            image_refs=[image],
+            video_length=int(seconds) * FPS + 1,  # Wan2GP replaces it with the sum of the [/duration] markers
+        )
+    return settings
 
 
 def extend_settings(defaults, *, video, anchor, prompt, resolution, seconds, seed, loras=(), high=1.0, low=0.0, smooth=True):
@@ -128,28 +196,31 @@ def motion_settings(defaults, *, image, video, description, resolution, frames, 
     }
 
 
-IDEAS_INSTRUCTIONS = (
-    "You are a creative director for short vertical social videos. Look at the image and propose "
-    "exactly 3 different short video ideas that start from this exact image. Each idea must work as one "
-    "continuous 5 second shot in the same place: no cuts, no change of location, lighting or time of day. "
-    "Keep the same person, face, hairstyle and setting, and prefer small natural actions over big ones. "
-    "The person keeps wearing exactly what they wear in the image. "
-    "Write one idea per line, one sentence each, with no numbering and no extra text."
-)
+def ideas_instructions(seconds=5):
+    return (
+        "You are a creative director for short vertical social videos. Look at the image and propose "
+        f"exactly 3 different short video ideas that start from this exact image. Each idea must work as one "
+        f"continuous {seconds} second shot in the same place: no cuts, no change of location, lighting or time of day. "
+        "Keep the same person, face, hairstyle and setting, and prefer small natural actions over big ones. "
+        "The person keeps wearing exactly what they wear in the image. "
+        "Write one idea per line, one sentence each, with no numbering and no extra text."
+    )
+
 
 # The model's own enhancer instructions ask for shot changes every second, which turns the person
 # into someone else. These keep one continuous shot and restate the subject on every line.
-DETAIL_INSTRUCTIONS = (
-    "You are an AI vision model writing a prompt for an image-to-video model. Analyze the provided image and the user's goal.\n"
-    "Describe ONE continuous shot that starts exactly from the image: no cuts, no scene change, no change of location, lighting, weather or time of day.\n"
-    "The person must stay the same person for the whole video: same face, hairstyle, hair color, body, skin tone, outfit and accessories as in the image. Never describe a different look.\n"
-    "Keep the motion natural and modest so the face stays recognizable. The camera is static or moves slowly.\n"
-    "Output rules:\n"
-    "Write one line per second, from 0 to 5 seconds.\n"
-    "Each line must begin with \"(at X seconds:\" where X is the second number, followed by a dense, comma-separated visual description, all inside a single set of parentheses.\n"
-    "Every line repeats the same subject and setting description taken from the image and changes only the action and the camera movement.\n"
-    "Do not include commentary, explanations, or meta-text."
-)
+def detail_instructions(seconds=5):
+    return (
+        "You are an AI vision model writing a prompt for an image-to-video model. Analyze the provided image and the user's goal.\n"
+        "Describe ONE continuous shot that starts exactly from the image: no cuts, no scene change, no change of location, lighting, weather or time of day.\n"
+        "The person must stay the same person for the whole video: same face, hairstyle, hair color, body, skin tone, outfit and accessories as in the image. Never describe a different look.\n"
+        "Keep the motion natural and modest so the face stays recognizable. The camera is static or moves slowly.\n"
+        "Output rules:\n"
+        f"Write one line per second, from 0 to {seconds - 1} seconds.\n"
+        "Each line must begin with \"(at X seconds:\" where X is the second number, followed by a dense, comma-separated visual description, all inside a single set of parentheses.\n"
+        "Every line repeats the same subject and setting description taken from the image and changes only the action and the camera movement.\n"
+        "Do not include commentary, explanations, or meta-text."
+    )
 
 
 def enhance(session, model_type, text, image, instructions=None, progress=None):
@@ -292,7 +363,7 @@ def build_ui(session):
         if active["job"] is not None:
             raise gr.Error("Đang tạo video, chờ xong rồi gợi ý.")
         text = (hint or "").strip() or "Suggest short video ideas for this image."
-        ideas = parse_ideas(enhance(session, "", text, image, IDEAS_INSTRUCTIONS, progress))
+        ideas = parse_ideas(enhance(session, "", text, image, ideas_instructions(), progress))
         if not ideas:
             raise gr.Error("Không nhận được ý tưởng nào, thử lại.")
         return gr.update(choices=ideas, value=None, visible=True)
@@ -304,7 +375,7 @@ def build_ui(session):
             raise gr.Error("Nhập ý ngắn hoặc chọn một ý tưởng trước.")
         if active["job"] is not None:
             raise gr.Error("Đang tạo video, chờ xong rồi gợi ý.")
-        return enhance(session, "", hint.strip(), image, DETAIL_INSTRUCTIONS, progress)
+        return enhance(session, "", hint.strip(), image, detail_instructions(), progress)
 
     with gr.Blocks(title="Simple App") as demo:
         r_last = gr.State(None)
@@ -387,10 +458,10 @@ def run_check(session, flag, args):
     if flag in ("--check-enhancer", "--check-reel"):
         (image,) = args
         print("enhancer_enabled =", sys.modules["wgp"].server_config.get("enhancer_enabled", 0))
-        ideas = parse_ideas(enhance(session, "", "Suggest short video ideas for this image.", image, IDEAS_INSTRUCTIONS))
+        ideas = parse_ideas(enhance(session, "", "Suggest short video ideas for this image.", image, ideas_instructions()))
         print("IDEAS:", ideas)
         assert ideas, "no ideas returned"
-        detail = enhance(session, "", ideas[0], image, DETAIL_INSTRUCTIONS)
+        detail = enhance(session, "", ideas[0], image, detail_instructions())
         print("DETAIL:", detail)
         assert detail.strip(), "empty detailed prompt"
         print("enhancer check ok")
