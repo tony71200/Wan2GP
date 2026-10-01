@@ -171,6 +171,42 @@ def extend_settings(defaults, *, video, anchor, prompt, resolution, seconds, see
     }
 
 
+MAX_IMAGES = 6
+
+
+def _one_line(*parts):
+    """Join non-empty parts with '. ' on a single line (PW windows must not contain blank lines)."""
+    cleaned = [" ".join(str(p).split()).rstrip(".") for p in parts if p and str(p).strip()]
+    return ". ".join(c for c in cleaned if c)
+
+
+def multi_settings(defaults, *, images, durations, prompts, common, resolution, seed, loras=(), high=1.0, low=0.0, smooth=True):
+    """One Lightning job through every image: window i starts at image i, lasts durations[i]
+    and ends on image i+1; the last window has no end image."""
+    paragraphs = [f"[/duration={int(d)}s] {_one_line(common, p)}" for d, p in zip(durations, prompts)]
+    return {
+        **defaults,
+        "model_type": REELS_MODEL,
+        "prompt": "\n\n".join(paragraphs),
+        "multi_prompts_gen_type": "PW",
+        "image_prompt_type": "SE" if len(images) > 1 else "S",
+        "image_start": images[0],
+        "image_end": list(images[1:]) or None,
+        "resolution": resolution,
+        "video_length": sum(int(d) for d in durations) * FPS + 1,
+        "seed": int(seed),
+        **_lora_settings(loras, high, low, smooth),
+    }
+
+
+def aspect_mismatch(sizes, tolerance=0.1):
+    """1-based positions of images whose aspect ratio differs from the first one by more than `tolerance`."""
+    if not sizes or not sizes[0]:
+        return []
+    ref = sizes[0][0] / sizes[0][1]
+    return [i for i, size in enumerate(sizes[1:], 2) if size and abs(size[0] / size[1] / ref - 1) > tolerance]
+
+
 # The model's own default prompt describes a demo character (a cat in a school uniform), so never fall back to it.
 MOTION_DEFAULT_PROMPT = (
     "Character appearance: the same people as in the reference image, with the same faces, hairstyles and outfits. "

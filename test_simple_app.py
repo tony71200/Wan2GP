@@ -3,6 +3,7 @@ from simple_app import (
     pick_resolution, frames_for, round_frames, pair_loras, parse_ideas,
     reels_settings, extend_settings, motion_settings,
     reel_plan, reel_windows, split_timeline, ideas_instructions, detail_instructions,
+    multi_settings, aspect_mismatch, MAX_IMAGES,
 )
 
 
@@ -170,6 +171,35 @@ def test_instructions():
     assert "one continuous 15 second shot" in ideas_instructions(15)
     assert "from 0 to 14 seconds" in detail_instructions(15)
     assert "from 0 to 4 seconds" in detail_instructions()
+
+
+def test_multi_settings():
+    s = multi_settings(
+        {"num_inference_steps": 4}, images=["a.png", "b.png", "c.png"], durations=[3, 2, 4],
+        prompts=["walks in", "", "sits.\n\ndown"], common="A man in a red coat.",
+        resolution="480x832", seed=1, loras=["x_high_noise.safetensors"], high=1, low=0, smooth=False,
+    )
+    assert s["model_type"] == REELS_MODEL and s["num_inference_steps"] == 4
+    assert s["image_prompt_type"] == "SE"
+    assert s["image_start"] == "a.png" and s["image_end"] == ["b.png", "c.png"]
+    assert s["multi_prompts_gen_type"] == "PW"
+    assert s["prompt"] == (
+        "[/duration=3s] A man in a red coat. walks in\n\n"
+        "[/duration=2s] A man in a red coat\n\n"
+        "[/duration=4s] A man in a red coat. sits. down"
+    )
+    assert s["video_length"] == 145 and s["resolution"] == "480x832" and s["seed"] == 1
+    assert s["loras_multipliers"] == "1;0" and s["temporal_upsampling"] == ""
+    one = multi_settings({}, images=["a.png"], durations=[2], prompts=["waves"], common="", resolution="480x832", seed=-1)
+    assert one["image_prompt_type"] == "S" and one["image_end"] is None
+    assert one["prompt"] == "[/duration=2s] waves" and one["video_length"] == 33
+    assert MAX_IMAGES == 6
+
+
+def test_aspect_mismatch():
+    assert aspect_mismatch([(1000, 1250), (800, 1000), (1000, 1000), None, (1080, 1920)]) == [3, 5]
+    assert aspect_mismatch([None, (1000, 1000)]) == []
+    assert aspect_mismatch([]) == []
 
 
 if __name__ == "__main__":
