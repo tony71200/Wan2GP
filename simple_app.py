@@ -137,8 +137,15 @@ def parse_ideas(text):
     return ideas[:3]
 
 
-def _lora_settings(loras, high, low, smooth):
+DETAIL_LORA = "detailz-wan.safetensors"  # loras/wan; Wan 2.1 detail enhancer, run on the low-noise phase only
+DETAIL_MULT = "0;0.6"
+
+
+def _lora_settings(loras, high, low, smooth, detail=False):
     names, mults = pair_loras(list(loras or []), high, low)
+    if detail and DETAIL_LORA not in names:
+        names.append(DETAIL_LORA)
+        mults = f"{mults} {DETAIL_MULT}".strip()
     return {
         "activated_loras": names,
         "loras_multipliers": mults,
@@ -146,7 +153,7 @@ def _lora_settings(loras, high, low, smooth):
     }
 
 
-def reels_settings(defaults, *, image, prompt, resolution, seconds, seed, loras=(), high=1.0, low=0.0, smooth=True):
+def reels_settings(defaults, *, image, prompt, resolution, seconds, seed, loras=(), high=1.0, low=0.0, smooth=True, detail=False):
     """Up to 5 s: one Lightning window. Longer: one SVI 2 Pro job, every window anchored on the original image."""
     model, durations = reel_plan(seconds)
     settings = {
@@ -158,7 +165,7 @@ def reels_settings(defaults, *, image, prompt, resolution, seconds, seed, loras=
         "resolution": resolution,
         "video_length": frames_for(seconds),
         "seed": int(seed),
-        **_lora_settings(loras, high, low, smooth),
+        **_lora_settings(loras, high, low, smooth, detail),
     }
     if model == EXTEND_MODEL:
         settings.update(
@@ -171,7 +178,7 @@ def reels_settings(defaults, *, image, prompt, resolution, seconds, seed, loras=
     return settings
 
 
-def extend_settings(defaults, *, video, anchor, prompt, resolution, seconds, seed, loras=(), high=1.0, low=0.0, smooth=True):
+def extend_settings(defaults, *, video, anchor, prompt, resolution, seconds, seed, loras=(), high=1.0, low=0.0, smooth=True, detail=False):
     """Continue `video` with SVI 2 Pro, anchoring every window on the original image."""
     return {
         **defaults,
@@ -186,7 +193,7 @@ def extend_settings(defaults, *, video, anchor, prompt, resolution, seconds, see
         # 4 = SVI 2 Pro window overlap; asking for the full window spills a few frames into a second, wasted window
         "video_length": frames_for(seconds) - 4,
         "seed": int(seed),
-        **_lora_settings(loras, high, low, smooth),
+        **_lora_settings(loras, high, low, smooth, detail),
     }
 
 
@@ -199,7 +206,7 @@ def _one_line(*parts):
     return ". ".join(c for c in cleaned if c)
 
 
-def multi_settings(defaults, *, images, durations, prompts, common, resolution, seed, loras=(), high=1.0, low=0.0, smooth=True):
+def multi_settings(defaults, *, images, durations, prompts, common, resolution, seed, loras=(), high=1.0, low=0.0, smooth=True, detail=False):
     """One Lightning job through every image: window i starts at image i, lasts durations[i]
     and ends on image i+1; the last window has no end image."""
     paragraphs = [f"[/duration={int(d)}s] {_one_line(common, p)}" for d, p in zip(durations, prompts)]
@@ -214,7 +221,7 @@ def multi_settings(defaults, *, images, durations, prompts, common, resolution, 
         "resolution": resolution,
         "video_length": sum(int(d) for d in durations) * FPS + 1,
         "seed": int(seed),
-        **_lora_settings(loras, high, low, smooth),
+        **_lora_settings(loras, high, low, smooth, detail),
     }
 
 
@@ -224,6 +231,28 @@ def aspect_mismatch(sizes, tolerance=0.1):
         return []
     ref = sizes[0][0] / sizes[0][1]
     return [i for i, size in enumerate(sizes[1:], 2) if size and abs(size[0] / size[1] / ref - 1) > tolerance]
+
+
+# "<image> :0–3s:" or "<image>: 3s:" heading each Story block
+_STORY_HEAD = re.compile(
+    r"^(?P<name>.+?\.(?:png|jpe?g|webp))\s*:\s*(?:(?P<start>\d+(?:\.\d+)?)\s*[–-]\s*)?(?P<end>\d+(?:\.\d+)?)\s*s?\s*:?$",
+    re.I,
+)
+
+
+def parse_story(text):
+    """[(image name, whole seconds, prompt on one line)] from a Story file, in file order."""
+    story = []
+    for block in re.split(r"\n\s*\n", str(text).lstrip("﻿").strip()):
+        head, *body = block.strip().splitlines()
+        m = _STORY_HEAD.match(head.strip())
+        if not m:
+            raise ValueError(f"Story: không đọc được dòng đầu khối: {head!r}")
+        seconds = float(m["end"]) - float(m["start"] or 0)
+        if seconds != int(seconds) or not 1 <= seconds <= 5:
+            raise ValueError(f"Story: {m['name'].strip()}: thời lượng {seconds:g}s phải là số giây nguyên từ 1 đến 5")
+        story.append((m["name"].strip(), int(seconds), _one_line(" ".join(body))))
+    return story
 
 
 # (steps, seconds per step, reference frames, reference pixels), measured 2026-09-30 on the RTX 5070 Ti Laptop 12 GB
@@ -236,6 +265,20 @@ SPEED = {
 LOAD_SECONDS = 120  # model load + VAE decode
 MODEL_LABELS = {REELS_MODEL: "Lightning v2", EXTEND_MODEL: "SVI 2 Pro", MOTION_MODEL: "Animate 2", ANIMATE_MODEL: "Animate 14B"}
 TIMINGS = ROOT / "simple_app_timings.json"
+HARNESS_LOG = ROOT / "logs" / "simple_app_harness.log"
+
+
+def log_harness(entry, path=HARNESS_LOG):
+    """Append one block to the harness log: a '=== time command' line, then 'key: value' lines."""
+    import time
+
+    entry = dict(entry)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [f"=== {time.strftime('%Y-%m-%d %H:%M:%S')} {entry.pop('command', '')}"]
+    lines += [f"{k}: {v}" for k, v in entry.items()]
+    with path.open("a", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n\n")
 
 
 def estimate_seconds(model, windows, resolution, calib=None):
@@ -255,7 +298,7 @@ def fmt_minutes(seconds):
 def eta_text(model, windows, resolution, calib=None):
     steps = SPEED[model][0]
     eta = fmt_minutes(estimate_seconds(model, windows, resolution, calib))
-    return f"⏱ ≈ {eta} ({MODEL_LABELS[model]} · {len(windows)} cửa sổ × {steps} bước)"
+    return f"Ước tính {eta} · {MODEL_LABELS[model]} · {len(windows)} cửa sổ × {steps} bước"
 
 
 def load_calib(path=TIMINGS):
@@ -280,7 +323,7 @@ MOTION_DEFAULT_PROMPT = (
 )
 
 
-def motion_settings(defaults, *, image, video, description, resolution, frames, seed, model=MOTION_MODEL, smooth=False):
+def motion_settings(defaults, *, image, video, description, resolution, frames, seed, model=MOTION_MODEL, smooth=False, audio=False, outfit=False):
     """Character image animated by the driving video; the image is the reference for every window."""
     settings = {
         **defaults,
@@ -294,6 +337,8 @@ def motion_settings(defaults, *, image, video, description, resolution, frames, 
         "force_fps": str(FPS),  # resample the driving video: half the frames of 30 fps, same duration
         "seed": int(seed),
         "temporal_upsampling": "rife*2" if smooth else "",
+        # Wan2GP muxes the driving video's audio, trimmed to the generated length
+        "postprocess_audio": "control" if audio else "",
     }
     if model == ANIMATE_MODEL:
         settings.update(
@@ -307,6 +352,9 @@ def motion_settings(defaults, *, image, video, description, resolution, frames, 
             guidance_scale=1,
             sliding_window_size=MOTION_WINDOWS[ANIMATE_MODEL][0],
         )
+    elif outfit:
+        # no character reference: later windows continue from the previous window, so outfit changes can carry over
+        settings.update(image_prompt_type="S", image_start=image, video_prompt_type="UV", image_refs=None)
     else:
         settings.update(image_prompt_type="T", video_prompt_type="UVI")
     return settings
@@ -331,6 +379,7 @@ def detail_instructions(seconds=5):
         "Describe ONE continuous shot that starts exactly from the image: no cuts, no scene change, no change of location, lighting, weather or time of day.\n"
         "The person must stay the same person for the whole video: same face, hairstyle, hair color, body, skin tone, outfit and accessories as in the image. Never describe a different look.\n"
         "Keep the motion natural and modest so the face stays recognizable. The camera is static or moves slowly.\n"
+        "The camera keeps the same distance and framing as the image: no zoom, no push-in, no close-up on the face; the person may walk closer by themselves.\n"
         "Output rules:\n"
         f"Write one line per second, from 0 to {seconds - 1} seconds.\n"
         "Each line must begin with \"(at X seconds:\" where X is the second number, followed by a dense, comma-separated visual description, all inside a single set of parentheses.\n"

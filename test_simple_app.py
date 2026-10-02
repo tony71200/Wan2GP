@@ -6,6 +6,7 @@ from simple_app import (
     multi_settings, aspect_mismatch, MAX_IMAGES,
     ANIMATE_MODEL, FUSIONX_LORA, MOTION_MODELS, MOTION_WINDOWS, motion_frames, sliding_windows,
     estimate_seconds, fmt_minutes, eta_text, load_calib, save_calib,
+    DETAIL_LORA, parse_story, log_harness,
 )
 
 
@@ -249,8 +250,64 @@ def test_fmt_minutes():
 
 
 def test_eta_text():
-    assert eta_text(EXTEND_MODEL, [81, 81, 81], "480x832") == "⏱ ≈ 35 phút (SVI 2 Pro · 3 cửa sổ × 8 bước)"
-    assert eta_text(REELS_MODEL, [81], "480x832") == "⏱ ≈ 7 phút (Lightning v2 · 1 cửa sổ × 4 bước)"
+    assert eta_text(EXTEND_MODEL, [81, 81, 81], "480x832") == "Ước tính 35 phút · SVI 2 Pro · 3 cửa sổ × 8 bước"
+    assert eta_text(REELS_MODEL, [81], "480x832") == "Ước tính 7 phút · Lightning v2 · 1 cửa sổ × 4 bước"
+
+
+def test_detail_lora():
+    s = reels_settings({}, image="a.png", prompt="p", resolution="480x832", seconds=5, seed=1,
+                       loras=["x_high_noise.safetensors"], high=1, low=0, detail=True)
+    assert s["activated_loras"] == ["x_high_noise.safetensors", DETAIL_LORA]
+    assert s["loras_multipliers"] == "1;0 0;0.6"
+    assert reels_settings({}, image="a.png", prompt="p", resolution="480x832", seconds=5, seed=1, detail=True)["loras_multipliers"] == "0;0.6"
+    own = reels_settings({}, image="a.png", prompt="p", resolution="480x832", seconds=5, seed=1, loras=[DETAIL_LORA], detail=True)
+    assert own["activated_loras"] == [DETAIL_LORA]
+    assert DETAIL_LORA in multi_settings({}, images=["a.png"], durations=[2], prompts=["w"], common="", resolution="480x832", seed=1, detail=True)["activated_loras"]
+    assert DETAIL_LORA in extend_settings({}, video="v.mp4", anchor="a.png", prompt="p", resolution="480x832", seconds=3, seed=1, detail=True)["activated_loras"]
+
+
+def test_parse_story():
+    text = (
+        "\ufeffA %x% .png :0–3s:\nAnimate the photo.\nHe smiles.\n\n"
+        "b.png: 3-7s:\nHe waves.\n\n"
+        "c.jpg : 2s :\nHe sits.\n"
+    )
+    assert parse_story(text) == [("A %x% .png", 3, "Animate the photo. He smiles"), ("b.png", 4, "He waves"), ("c.jpg", 2, "He sits")]
+    for bad in ("a.png :0–6s:\nx", "a.png :3–3s:\nx", "no header here\nx"):
+        try:
+            parse_story(bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(bad)
+
+
+def test_motion_audio_outfit():
+    base = dict(image="c.png", video="d.mp4", description="", resolution="480x832", frames=65, seed=1)
+    assert motion_settings({}, **base)["postprocess_audio"] == ""
+    assert motion_settings({}, **base, audio=True)["postprocess_audio"] == "control"
+    o = motion_settings({}, **base, outfit=True)
+    assert o["image_prompt_type"] == "S" and o["image_start"] == "c.png"
+    assert o["video_prompt_type"] == "UV" and o["image_refs"] is None
+    a = motion_settings({}, **base, model=ANIMATE_MODEL, outfit=True)
+    assert a["video_prompt_type"] == "PVBKI" and a["image_refs"] == ["c.png"]
+
+
+def test_detail_instructions_no_zoom():
+    assert "no zoom" in detail_instructions(10)
+
+
+def test_log_harness():
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "logs" / "h.log"
+        log_harness({"command": "--check-reel a.png 10", "got": "10.06s", "ok": True}, p)
+        log_harness({"command": "--check-multi x", "ok": False}, p)
+        text = p.read_text(encoding="utf-8")
+        assert text.count("=== ") == 2
+        assert "--check-reel a.png 10\ngot: 10.06s\nok: True\n" in text
 
 
 def test_calib_roundtrip():
