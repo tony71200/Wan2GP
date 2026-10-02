@@ -431,15 +431,86 @@ def _video_info(path):
     return fps, total
 
 
-CSS = """
-.gradio-container { background: #F9BE7E !important; }
-#header { background: #F9A710; padding: 8px 16px; border-radius: 10px; align-items: center; }
-#header h2 { margin: 0; font-family: monospace; }
-#guide { display: none; position: fixed; inset: 5vh 10vw; z-index: 1000; background: white; border-radius: 12px;
-         box-shadow: 0 10px 40px rgba(0, 0, 0, .35); padding: 20px; overflow: auto; }
+# Dark creative-tool palette (spec v3 §1): neutral surfaces, one orange accent for the primary action, state and focus.
+COLORS = {
+    "bg": "#0B0B0C", "surface": "#141416", "panel": "#1C1C1F", "border": "#27272A", "border_strong": "#3F3F46",
+    "text": "#F4F4F5", "text2": "#A1A1AA", "accent": "#F97316", "accent_hover": "#FB923C", "on_accent": "#0B0B0C",
+    "success": "#4ADE80", "warn": "#FBBF24", "error": "#F87171",
+}
+THEME_VARS = {
+    "body_background_fill": COLORS["bg"],
+    "body_text_color": COLORS["text"],
+    "body_text_color_subdued": COLORS["text2"],
+    "background_fill_primary": COLORS["surface"],
+    "background_fill_secondary": COLORS["panel"],
+    "border_color_primary": COLORS["border"],
+    "border_color_accent": COLORS["accent"],
+    "block_background_fill": COLORS["surface"],
+    "block_border_color": COLORS["border"],
+    "block_border_width": "1px",
+    "block_shadow": "none",
+    "block_label_background_fill": COLORS["surface"],
+    "block_label_text_color": COLORS["text2"],
+    "block_title_text_color": COLORS["text2"],
+    "input_background_fill": COLORS["panel"],
+    "input_border_color": COLORS["border"],
+    "input_border_color_focus": COLORS["accent"],
+    "input_shadow": "none",
+    "input_shadow_focus": f"0 0 0 2px {COLORS['accent']}59",
+    "button_primary_background_fill": COLORS["accent"],
+    "button_primary_background_fill_hover": COLORS["accent_hover"],
+    "button_primary_text_color": COLORS["on_accent"],
+    "button_primary_border_color": COLORS["accent"],
+    "button_primary_shadow": "none",
+    "button_primary_shadow_hover": "none",
+    "button_secondary_background_fill": COLORS["panel"],
+    "button_secondary_background_fill_hover": COLORS["border"],
+    "button_secondary_text_color": COLORS["text"],
+    "button_secondary_border_color": COLORS["border_strong"],
+    "button_secondary_shadow": "none",
+    "button_secondary_shadow_hover": "none",
+    "checkbox_background_color": COLORS["panel"],
+    "checkbox_background_color_selected": COLORS["accent"],
+    "checkbox_border_color": COLORS["border_strong"],
+    "checkbox_label_shadow": "none",
+    "slider_color": COLORS["accent"],
+    "color_accent": COLORS["accent"],
+    "color_accent_soft": COLORS["panel"],
+    "link_text_color": COLORS["accent"],
+    "panel_background_fill": COLORS["surface"],
+    "panel_border_color": COLORS["border"],
+    "shadow_drop": "none",
+    "shadow_drop_lg": "none",
+}
+# The page is always dark, whatever the OS theme.
+FORCE_DARK = "() => document.body.classList.add('dark')"
+
+CSS = f"""
+.gradio-container {{ max-width: 1280px !important; margin: 0 auto; }}
+#header {{ align-items: center; border-bottom: 1px solid {COLORS['border']}; padding: 8px 0 16px; }}
+#header h1 {{ font-size: 24px; font-weight: 600; letter-spacing: -0.02em; margin: 0; }}
+#header p {{ color: {COLORS['text2']}; margin: 2px 0 0; }}
+.eta {{ font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; color: {COLORS['text2']}; font-size: 14px; }}
+.note {{ color: {COLORS['warn']}; font-size: 14px; }}
+#guide {{ display: none; position: fixed; inset: 5vh 10vw; z-index: 1000; background: {COLORS['surface']};
+          border: 1px solid {COLORS['border_strong']}; border-radius: 8px; padding: 24px; overflow: auto; }}
 """
-# The orange palette is designed for light mode; Gradio otherwise follows the OS theme.
-FORCE_LIGHT = "() => document.body.classList.remove('dark')"
+
+
+def make_theme():
+    """Gradio theme carrying COLORS for both light and dark variables."""
+    import inspect
+
+    import gradio as gr
+
+    theme = gr.themes.Base(
+        primary_hue="orange", neutral_hue="zinc", radius_size=gr.themes.sizes.radius_sm,
+        font=[gr.themes.GoogleFont("Inter Tight"), "system-ui", "sans-serif"],
+        font_mono=[gr.themes.GoogleFont("JetBrains Mono"), "monospace"],
+    )
+    settable = set(inspect.signature(theme.set).parameters)
+    return theme.set(**THEME_VARS, **{k + "_dark": v for k, v in THEME_VARS.items() if k + "_dark" in settable})
+
 
 GUIDE = """
 ## Hướng dẫn sử dụng
@@ -450,6 +521,7 @@ GUIDE = """
 - Prompt có mốc giây như `(at 3 seconds: …)` hoặc `(0-2 seconds: …)` được tự tách cho từng cửa sổ. Dòng không có mốc (mô tả nhân vật) được giữ ở mọi cửa sổ.
 - **3 ý tưởng / Viết chi tiết**: Qwen3.5-4B (có thị giác) đọc ảnh rồi viết prompt theo từng giây của thời lượng đang chọn.
 - **Kéo dài video**: nối thêm một đoạn bằng SVI 2 Pro, neo về ảnh gốc.
+- **Giữ da & tóc**: thêm LoRA chi tiết *Detailz* ở Pha cuối (cường độ 0.6) để da và tóc không bị bệt hay biến dạng. Ảnh cận mặt: bật *Giữ da & tóc*, nên chọn 720p. "Viết chi tiết" giữ máy quay ở khoảng cách cũ, không zoom sát mặt.
 
 ### Reels Multi Image: tối đa 6 ảnh của cùng một nhân vật
 Mỗi ảnh là một mốc. Đoạn của ảnh *i* bắt đầu ở ảnh *i*, dài đúng số giây ghi trên ảnh đó và kết thúc ở ảnh *i+1*. Đoạn của ảnh cuối chạy tự do. Mô tả nhân vật chung được ghép vào đầu prompt của mọi đoạn. Độ phân giải theo ảnh 1.
@@ -458,6 +530,11 @@ Mỗi ảnh là một mốc. Đoạn của ảnh *i* bắt đầu ở ảnh *i*,
 Nhân vật trong ảnh làm theo chuyển động của video mẫu. Video ra dài **đúng bằng video mẫu**, trừ khi tick *Giới hạn thời lượng*. Video mẫu được đưa về 16 fps để chạy nhanh gấp đôi; bật *Mượt x2* để ra 32 fps.
 - **Animate 2 distilled**: 10 bước, cửa sổ 65 frame.
 - **Wan 2.2 Animate 14B**: thêm LoRA FusionX, 10 bước, cửa sổ 81 frame.
+- **Giữ âm thanh video mẫu**: video ra mang âm thanh của video mẫu, cắt đúng độ dài.
+- **Trang phục theo video mẫu** (chỉ Animate 2): ảnh chỉ làm khung đầu, các đoạn sau nối tiếp nhau nên trang phục đổi được theo video mẫu (ví dụ cởi áo). Đánh đổi: mặt có thể trôi nhiều hơn.
+
+### Video trung gian
+Video dài được sinh từng cửa sổ. App chỉ giữ video cuối: mỗi cửa sổ mới thay file của cửa sổ trước, và báo số video trung gian đã xóa khi xong.
 
 ### Pha đầu và Pha cuối
 Wan 2.2 khử nhiễu bằng **hai model nối tiếp**:
@@ -533,7 +610,12 @@ def build_ui(session):
             return None, ""
         took = time.monotonic() - start
         save_calib(model, took, estimate_seconds(model, windows, settings["resolution"]))
-        return video, f"Thực tế: {fmt_minutes(took)}"
+        text = f"Thực tế {fmt_minutes(took)}"
+        removed = len(windows) - 1  # keep_intermediate_sliding_windows = 0: each window replaced the previous file
+        if removed > 0:
+            gr.Info(f"Đã xóa {removed} video trung gian, chỉ giữ video cuối.")
+            text += f" · đã xóa {removed} video trung gian"
+        return video, text
 
     def cancel():
         job = active["job"]
@@ -555,14 +637,14 @@ def build_ui(session):
     def results(extend=False):
         """Right column of a tab: actions, estimate, video, timing, follow-up buttons."""
         with gr.Row():
-            cancel_btn = gr.Button("Hủy")
+            cancel_btn = gr.Button("Hủy", variant="secondary")
             go = gr.Button("Tạo Video", variant="primary")
-        eta = gr.Markdown()
-        video = gr.Video(label="Video ra", autoplay=True)
-        took = gr.Markdown()
+        eta = gr.Markdown(elem_classes="eta")
+        video = gr.Video(label="Video ra", autoplay=True, interactive=False)
+        took = gr.Markdown(elem_classes="eta")
         with gr.Row():
-            ext = gr.Button("Kéo dài video (neo ảnh gốc)", interactive=False) if extend else None
-            up = gr.Button("Upscale ×2", interactive=False)
+            ext = gr.Button("Kéo dài video (neo ảnh gốc)", variant="secondary", interactive=False) if extend else None
+            up = gr.Button("Upscale ×2", variant="secondary", interactive=False)
         cancel_btn.click(cancel, queue=False)
         up.click(upscale, video, video)
         return go, eta, video, took, ext, up
@@ -579,7 +661,7 @@ def build_ui(session):
         model, windows = reel_windows(seconds)
         return info, eta_text(model, windows, image_resolution(image, quality), load_calib())
 
-    def make_reel(image, prompt, seconds, quality, smooth, loras, high, low, seed, progress=gr.Progress()):
+    def make_reel(image, prompt, seconds, quality, smooth, loras, high, low, detail, seed, progress=gr.Progress()):
         if not image:
             raise gr.Error("Chưa có ảnh đầu vào.")
         if not (prompt or "").strip():
@@ -588,7 +670,7 @@ def build_ui(session):
         settings = reels_settings(
             session.get_default_settings(model),
             image=image, prompt=prompt, resolution=image_resolution(image, quality),
-            seconds=seconds, seed=seed, loras=loras, high=high, low=low, smooth=smooth,
+            seconds=seconds, seed=seed, loras=loras, high=high, low=low, smooth=smooth, detail=detail,
         )
         video, took = generate(settings, windows, progress)
         if video is None:
@@ -596,7 +678,7 @@ def build_ui(session):
         last = {"video": video, "image": image, "resolution": settings["resolution"]}
         return video, last, gr.update(interactive=True), gr.update(interactive=True), took
 
-    def extend_reel(last, prompt, seconds, smooth, loras, high, low, seed, progress=gr.Progress()):
+    def extend_reel(last, prompt, seconds, smooth, loras, high, low, detail, seed, progress=gr.Progress()):
         if not last:
             raise gr.Error("Chưa có video để kéo dài.")
         if not (prompt or "").strip():
@@ -604,7 +686,7 @@ def build_ui(session):
         settings = extend_settings(
             session.get_default_settings(EXTEND_MODEL),
             video=last["video"], anchor=last["image"], prompt=prompt, resolution=last["resolution"],
-            seconds=min(seconds, 5), seed=seed, loras=loras, high=high, low=low, smooth=smooth,
+            seconds=min(seconds, 5), seed=seed, loras=loras, high=high, low=low, smooth=smooth, detail=detail,
         )
         video, took = generate(settings, [settings["video_length"]], progress)
         if video is None:
@@ -638,7 +720,7 @@ def build_ui(session):
         eta = eta_text(REELS_MODEL, [int(d) * FPS + 1 for d in durations], image_resolution(images[0], quality), load_calib())
         off = aspect_mismatch([_image_size(im) if im else None for im in images])
         if off:
-            eta += f"\n\n⚠ Ảnh {', '.join(map(str, off))} lệch tỉ lệ khung với ảnh 1 hơn 10%: Wan2GP sẽ co và cắt."
+            eta += f"\n\nLưu ý: ảnh {', '.join(map(str, off))} lệch tỉ lệ khung với ảnh 1 hơn 10%: Wan2GP sẽ co và cắt."
         return count, eta
 
     def multi_add(n):
@@ -657,7 +739,7 @@ def build_ui(session):
         return remove
 
     # progress must come before *vals: Gradio only injects gr.Progress into positional parameters
-    def make_multi(n, common, quality, smooth, loras, high, low, seed, progress=gr.Progress(), *vals):
+    def make_multi(n, common, quality, smooth, loras, high, low, detail, seed, progress=gr.Progress(), *vals):
         images = list(vals[:n])
         durations = [int(d) for d in vals[MAX_IMAGES:MAX_IMAGES + n]]
         prompts = list(vals[2 * MAX_IMAGES:2 * MAX_IMAGES + n])
@@ -668,7 +750,7 @@ def build_ui(session):
         settings = multi_settings(
             session.get_default_settings(REELS_MODEL),
             images=images, durations=durations, prompts=prompts, common=common,
-            resolution=image_resolution(images[0], quality), seed=seed, loras=loras, high=high, low=low, smooth=smooth,
+            resolution=image_resolution(images[0], quality), seed=seed, loras=loras, high=high, low=low, smooth=smooth, detail=detail,
         )
         video, took = generate(settings, [d * FPS + 1 for d in durations], progress)
         if video is None:
@@ -684,16 +766,19 @@ def build_ui(session):
         info = f"**Video mẫu:** {seconds:.1f} giây · {fps:g} fps → {motion_frames(fps, total)} frame ở {FPS} fps"
         return info, gr.update(maximum=max(1, min(15, int(seconds))))
 
-    def motion_eta(image, video, limit_on, limit, quality, label):
+    def motion_eta(image, video, limit_on, limit, quality, label, outfit):
         if not video:
-            return "⏱ Chọn video mẫu để ước tính."
+            return "Chọn video mẫu để ước tính."
         model = MOTION_MODELS[label]
         fps, total = _video_info(video)
         frames = motion_frames(fps, total, limit if limit_on else None)
         windows = sliding_windows(frames, *MOTION_WINDOWS[model])
-        return eta_text(model, windows, image_resolution(image, quality), load_calib())
+        text = eta_text(model, windows, image_resolution(image, quality), load_calib())
+        if outfit and model == ANIMATE_MODEL:
+            text += "\n\nLưu ý: Wan 2.2 Animate 14B luôn giữ trang phục theo ảnh."
+        return text
 
-    def make_motion(image, video, description, limit_on, limit, quality, smooth, label, seed, progress=gr.Progress()):
+    def make_motion(image, video, description, limit_on, limit, quality, smooth, label, audio, outfit, seed, progress=gr.Progress()):
         if not image:
             raise gr.Error("Chưa có ảnh nhân vật.")
         if not video:
@@ -706,31 +791,32 @@ def build_ui(session):
         settings = motion_settings(
             session.get_default_settings(model), image=image, video=video, description=description,
             resolution=image_resolution(image, quality), frames=frames, seed=seed, model=model, smooth=smooth,
+            audio=audio, outfit=outfit,
         )
         out, took = generate(settings, sliding_windows(frames, *MOTION_WINDOWS[model]), progress)
         if out is None:
             return gr.update(), gr.update(), gr.update()
         return out, gr.update(interactive=True), took
 
-    with gr.Blocks(title="Simple App", theme=gr.themes.Soft(primary_hue="orange"), css=CSS, js=FORCE_LIGHT) as demo:
+    with gr.Blocks(title="Simple App", theme=make_theme(), css=CSS, js=FORCE_DARK) as demo:
         r_last = gr.State(None)
         with gr.Row(elem_id="header"):
-            gr.Markdown("## Simple WebApp: Reels and Motion Control")
-            guide_btn = gr.Button("Hướng dẫn", size="sm", scale=0)
+            gr.HTML("<h1>Simple App</h1><p>Reels · Reels Multi Image · Motion Control</p>")
+            guide_btn = gr.Button("Hướng dẫn", variant="secondary", size="sm", scale=0)
         with gr.Column(elem_id="guide"):
             gr.Markdown(GUIDE)
-            close_btn = gr.Button("Đóng")
+            close_btn = gr.Button("Đóng", variant="secondary")
 
         with gr.Tab("Reels"):
             with gr.Row():
                 with gr.Column(scale=1):
                     r_image = gr.Image(type="filepath", label="Ảnh đầu vào", sources=["upload", "clipboard"])
-                    r_info = gr.Markdown()
+                    r_info = gr.Markdown(elem_classes="eta")
                     r_hint = gr.Textbox(label="Ý ngắn", placeholder="chàng trai thong thả đi đến gần")
                     with gr.Row():
-                        r_ideas_btn = gr.Button("3 ý tưởng", scale=0)
+                        r_ideas_btn = gr.Button("3 ý tưởng", variant="secondary", scale=0)
                         r_ideas = gr.Dropdown(choices=[], label="Ý tưởng", scale=2)
-                        r_detail_btn = gr.Button("Viết chi tiết", variant="primary", scale=0)
+                        r_detail_btn = gr.Button("Viết chi tiết", variant="secondary", scale=0)
                     r_prompt = gr.Textbox(label="Prompt", lines=8)
                 with gr.Column(scale=1):
                     r_go, r_eta, r_video, r_took, r_extend, r_up = results(extend=True)
@@ -742,6 +828,7 @@ def build_ui(session):
                         with gr.Row():
                             r_high = gr.Slider(0, 2, value=1, step=0.1, label="Pha đầu (chuyển động)")
                             r_low = gr.Slider(0, 2, value=0, step=0.1, label="Pha cuối (chi tiết mặt)")
+                        r_detail = gr.Checkbox(False, label="Giữ da & tóc (LoRA chi tiết, nên dùng cho ảnh cận mặt)")
                         r_seed = gr.Number(value=-1, precision=0, label="Seed (-1 = ngẫu nhiên)")
 
         with gr.Tab("Reels Multi Image"):
@@ -760,9 +847,9 @@ def build_ui(session):
                                 mm_images.append(gr.Image(type="filepath", label=f"Ảnh {i + 1}", sources=["upload", "clipboard"], height=220))
                                 mm_durations.append(gr.Slider(1, 5, value=3, step=1, label="Thời lượng đoạn (giây)"))
                                 mm_prompts.append(gr.Textbox(label=f"Prompt {i + 1}", lines=3, placeholder="hành động trong đoạn này"))
-                                mm_removes.append(gr.Button("Xóa", size="sm"))
+                                mm_removes.append(gr.Button("Xóa", variant="secondary", size="sm"))
                             mm_cards.append(card)
-                    mm_add = gr.Button("+ Thêm ảnh")
+                    mm_add = gr.Button("Thêm ảnh", variant="secondary")
                     with gr.Accordion("Cài đặt nâng cao", open=False):
                         mm_quality = gr.Radio(["480p", "720p"], value="480p", label="Độ phân giải (theo ảnh 1)")
                         mm_smooth = gr.Checkbox(value=True, label="Mượt x2 (32 fps)")
@@ -770,6 +857,7 @@ def build_ui(session):
                         with gr.Row():
                             mm_high = gr.Slider(0, 2, value=1, step=0.1, label="Pha đầu (chuyển động)")
                             mm_low = gr.Slider(0, 2, value=0, step=0.1, label="Pha cuối (chi tiết mặt)")
+                        mm_detail = gr.Checkbox(False, label="Giữ da & tóc (LoRA chi tiết)")
                         mm_seed = gr.Number(value=-1, precision=0, label="Seed (-1 = ngẫu nhiên)")
                 with gr.Column(scale=1):
                     mm_go, mm_eta, mm_video, mm_took, _, mm_up = results()
@@ -780,7 +868,7 @@ def build_ui(session):
                     with gr.Row():
                         m_image = gr.Image(type="filepath", label="Ảnh nhân vật", sources=["upload", "clipboard"])
                         m_video = gr.Video(label="Video tham chiếu", sources=["upload"])
-                    m_info = gr.Markdown()
+                    m_info = gr.Markdown(elem_classes="eta")
                     m_desc = gr.Textbox(
                         label="Mô tả nhân vật, bối cảnh (không bắt buộc)", lines=2,
                         placeholder="Character appearance: ... Background: ...",
@@ -791,6 +879,9 @@ def build_ui(session):
                             m_limit = gr.Slider(1, 15, value=5, step=1, label="Thời lượng (giây, cắt từ đầu video mẫu)", interactive=False)
                         m_quality = gr.Radio(["480p", "720p"], value="480p", label="Độ phân giải")
                         m_smooth = gr.Checkbox(value=True, label="Mượt x2 (16 → 32 fps)")
+                        with gr.Row():
+                            m_audio = gr.Checkbox(True, label="Giữ âm thanh video mẫu")
+                            m_outfit = gr.Checkbox(False, label="Trang phục theo video mẫu")
                         m_model = gr.Dropdown(list(MOTION_MODELS), value="Animate 2 distilled", label="Chọn Model")
                         m_seed = gr.Number(value=-1, precision=0, label="Seed (-1 = ngẫu nhiên)")
                     if not session.get_model_availability(MOTION_MODEL)["available"]:
@@ -812,12 +903,12 @@ def build_ui(session):
         r_detail_btn.click(write_detail, [r_image, r_hint, r_seconds], r_prompt)
         r_go.click(
             make_reel,
-            [r_image, r_prompt, r_seconds, r_quality, r_smooth, r_loras, r_high, r_low, r_seed],
+            [r_image, r_prompt, r_seconds, r_quality, r_smooth, r_loras, r_high, r_low, r_detail, r_seed],
             [r_video, r_last, r_extend, r_up, r_took],
         )
         r_extend.click(
             extend_reel,
-            [r_last, r_prompt, r_seconds, r_smooth, r_loras, r_high, r_low, r_seed],
+            [r_last, r_prompt, r_seconds, r_smooth, r_loras, r_high, r_low, r_detail, r_seed],
             [r_video, r_last, r_took],
         )
 
@@ -832,19 +923,19 @@ def build_ui(session):
         mm_loras.focus(lora_choices, outputs=mm_loras)
         mm_go.click(
             make_multi,
-            [mm_n, mm_common, mm_quality, mm_smooth, mm_loras, mm_high, mm_low, mm_seed, *slots],
+            [mm_n, mm_common, mm_quality, mm_smooth, mm_loras, mm_high, mm_low, mm_detail, mm_seed, *slots],
             [mm_video, mm_up, mm_took],
         )
 
         m_limit_on.change(lambda on: gr.update(interactive=on), m_limit_on, m_limit)
         m_video.change(motion_info, m_video, [m_info, m_limit])
-        motion_in = [m_image, m_video, m_limit_on, m_limit, m_quality, m_model]
+        motion_in = [m_image, m_video, m_limit_on, m_limit, m_quality, m_model, m_outfit]
         for comp in motion_in:
             comp.change(motion_eta, motion_in, m_eta)
         demo.load(motion_eta, motion_in, m_eta)
         m_go.click(
             make_motion,
-            [m_image, m_video, m_desc, m_limit_on, m_limit, m_quality, m_smooth, m_model, m_seed],
+            [m_image, m_video, m_desc, m_limit_on, m_limit, m_quality, m_smooth, m_model, m_audio, m_outfit, m_seed],
             [m_out, m_up, m_took],
         )
     return demo
@@ -917,6 +1008,8 @@ def main():
     from shared.api import init
 
     session = init(root=ROOT, cli_args=["--profile", "4"])
+    # in memory only (wgp_config.json is untouched): each new sliding window replaces the previous window's file
+    sys.modules["wgp"].server_config["keep_intermediate_sliding_windows"] = 0
     if flag:
         run_check(session, flag, args)
         return
