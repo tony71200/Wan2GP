@@ -941,8 +941,58 @@ def build_ui(session):
     return demo
 
 
+def _has_audio(path):
+    """True when the media file has an audio stream (ffprobe from ffmpeg_bins)."""
+    import subprocess
+
+    probe = ROOT / "ffmpeg_bins" / "ffprobe.exe"
+    out = subprocess.run(
+        [str(probe), "-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True,
+    )
+    return bool(out.stdout.strip())
+
+
+def contact_sheet(video, times, image=None, out=None):
+    """Save the source image (optional) and the frames at `times` side by side, plus each frame as a full-size PNG."""
+    import cv2
+    import numpy as np
+
+    out = Path(out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    cap = cv2.VideoCapture(str(video))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 16
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    tiles = []
+    if image:
+        src = cv2.imdecode(np.fromfile(str(image), dtype=np.uint8), cv2.IMREAD_COLOR)
+        tiles.append(cv2.resize(src, (320, 552)))
+    for t in times:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, min(total - 1, int(t * fps)))
+        ok, frame = cap.read()
+        if not ok:
+            continue
+        cv2.imencode(".png", frame)[1].tofile(str(out.with_name(f"{out.stem}_{t:g}s.png")))
+        tile = cv2.resize(frame, (320, 552))
+        cv2.putText(tile, f"{t:g}s", (10, 34), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+        tiles.append(tile)
+    cap.release()
+    cv2.imencode(".jpg", np.hstack(tiles))[1].tofile(str(out))
+    return out
+
+
 def run_check(session, flag, args):
-    """Headless smoke checks: python simple_app.py --check-<name> <args...>"""
+    """Headless smoke checks: python simple_app.py --check-<name> <inputs...> [--detail] [--outfit] [--seed N]"""
+    import argparse
+    import time
+
+    parser = argparse.ArgumentParser(prog=f"simple_app.py {flag}")
+    parser.add_argument("inputs", nargs="*")
+    parser.add_argument("--detail", action="store_true", help="add the Detailz skin & hair LoRA")
+    parser.add_argument("--outfit", action="store_true", help="Motion Control: outfit follows the driving video")
+    parser.add_argument("--seed", type=int, default=-1)
+    opts = parser.parse_args(args)
+    stamp = time.strftime("%Y-%m-%d-%H%M%S")
 
     def generate(settings, label):
         result = session.submit_task(settings).result()
@@ -951,49 +1001,92 @@ def run_check(session, flag, args):
         print(f"{label}:", path)
         return path
 
-    def check_duration(path, expected):
-        fps, total = _video_info(path)
+    def check(kind, settings, windows, expected, times, image=None, extra=None):
+        """Generate, then log duration, timing, frames and audio to the harness log; fail on a wrong duration."""
+        start = time.monotonic()
+        out = generate(settings, kind.upper())
+        took = time.monotonic() - start
+        fps, total = _video_info(out)
         got = total / fps
-        print(f"duration {got:.2f}s ({total} frames @ {fps:g} fps), expected {expected:.2f}s")
-        assert abs(got - expected) <= 0.2, "wrong duration"
+        ok = abs(got - expected) <= 0.2
+        sheet = contact_sheet(out, [t for t in times if t < got], image, HARNESS_LOG.parent / f"{stamp}_{kind}.jpg")
+        entry = {
+            "command": " ".join([flag, *args]),
+            "model": settings["model_type"], "resolution": settings["resolution"], "seed": settings["seed"],
+            "loras": " ".join(settings.get("activated_loras") or []) or "-",
+            "expected": f"{expected:.2f}s", "got": f"{got:.2f}s ({total} frames @ {fps:g} fps)", "ok": ok,
+            "took": fmt_minutes(took), "intermediate_removed": len(windows) - 1,
+            **(extra or {}),
+            "video": out, "sheet": sheet,
+        }
+        log_harness(entry)
+        print(f"duration {got:.2f}s ({total} frames @ {fps:g} fps), expected {expected:.2f}s; log: {HARNESS_LOG}")
+        assert ok, "wrong duration"
+        return out
 
     if flag in ("--check-enhancer", "--check-reel"):
-        image, *rest = args
+        image, *rest = opts.inputs
         seconds = int(rest[0]) if rest else 5
-        print("enhancer_enabled =", sys.modules["wgp"].server_config.get("enhancer_enabled", 0))
-        ideas = parse_ideas(enhance(session, "", "Suggest short video ideas for this image.", image, ideas_instructions(seconds)))
-        print("IDEAS:", ideas)
-        assert ideas, "no ideas returned"
-        detail = enhance(session, "", ideas[0], image, detail_instructions(seconds))
-        print("DETAIL:", detail)
-        assert detail.strip(), "empty detailed prompt"
-        print("enhancer check ok")
+        prompt_file = rest[1] if len(rest) > 1 else None
+        if prompt_file:
+            prompt = Path(prompt_file).read_text(encoding="utf-8")
+        else:
+            print("enhancer_enabled =", sys.modules["wgp"].server_config.get("enhancer_enabled", 0))
+            ideas = parse_ideas(enhance(session, "", "Suggest short video ideas for this image.", image, ideas_instructions(seconds)))
+            print("IDEAS:", ideas)
+            assert ideas, "no ideas returned"
+            prompt = enhance(session, "", ideas[0], image, detail_instructions(seconds))
+            print("DETAIL:", prompt)
+            assert prompt.strip(), "empty detailed prompt"
+            print("enhancer check ok")
         if flag == "--check-reel":
             w, h = _image_size(image)
-            model, _ = reel_plan(seconds)
-            out = generate(reels_settings(
-                session.get_default_settings(model),
-                image=image, prompt=detail, resolution=pick_resolution(w, h), seconds=seconds, seed=-1,
-            ), "REEL")
-            check_duration(out, seconds)
+            model, windows = reel_windows(seconds)
+            settings = reels_settings(
+                session.get_default_settings(model), image=image, prompt=prompt, resolution=pick_resolution(w, h),
+                seconds=seconds, seed=opts.seed, detail=opts.detail,
+            )
+            check("reel", settings, windows, seconds, (0, 3, 6, 9, 12), image)
     elif flag == "--check-extend":
-        video, image, *prompt_words = args
+        video, image, *prompt_words = opts.inputs
         w, h = _image_size(image)
         generate(extend_settings(
             session.get_default_settings(EXTEND_MODEL),
             video=video, anchor=image, prompt=" ".join(prompt_words), resolution=pick_resolution(w, h), seconds=2, seed=-1,
         ), "EXTENDED")
+    elif flag == "--check-multi":
+        (folder,) = opts.inputs
+        folder = Path(folder)
+        story = parse_story((folder / "story.txt").read_text(encoding="utf-8"))
+        images = [str(folder / name) for name, _, _ in story]
+        durations = [seconds for _, seconds, _ in story]
+        w, h = _image_size(images[0])
+        settings = multi_settings(
+            session.get_default_settings(REELS_MODEL), images=images, durations=durations,
+            prompts=[prompt for *_, prompt in story], common="", resolution=pick_resolution(w, h),
+            seed=opts.seed, detail=opts.detail,
+        )
+        starts = [sum(durations[:i]) for i in range(len(durations))]
+        check("multi", settings, [d * FPS + 1 for d in durations], sum(durations), (*starts, sum(durations) - 0.2), images[0],
+              {"segments": ", ".join(f"{name} {d}s" for name, d, _ in story)})
     elif flag == "--check-motion":
-        image, video, *rest = args
+        image, video, *rest = opts.inputs
         model = ANIMATE_MODEL if rest and rest[0] == "animate" else MOTION_MODEL
         limit = float(rest[1]) if len(rest) > 1 else None
         fps, total = _video_info(video)
         w, h = _image_size(image)
-        out = generate(motion_settings(
+        frames = motion_frames(fps, total, limit)
+        settings = motion_settings(
             session.get_default_settings(model), image=image, video=video, description="",
-            resolution=pick_resolution(w, h), frames=motion_frames(fps, total, limit), seed=-1, model=model,
-        ), "MOTION")
-        check_duration(out, min(limit, total / fps) if limit else total / fps)
+            resolution=pick_resolution(w, h), frames=frames, seed=opts.seed, model=model, audio=True, outfit=opts.outfit,
+        )
+        expected = min(limit, total / fps) if limit else total / fps
+        out = check("motion", settings, sliding_windows(frames, *MOTION_WINDOWS[model]), expected, (0, 8, 11, 13, 15), image,
+                    {"outfit": opts.outfit, "driving_audio": _has_audio(video)})
+        audio_in, audio_out = _has_audio(video), _has_audio(out)
+        log_harness({"command": f"{flag} audio check", "driving_audio": audio_in, "output_audio": audio_out, "ok": audio_in == audio_out})
+        print(f"audio: driving={audio_in} output={audio_out}")
+        assert audio_in == audio_out, "output audio does not match the driving video"
     else:
         raise SystemExit(f"unknown check: {flag}")
 
