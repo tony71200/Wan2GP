@@ -124,3 +124,16 @@ Chạy tay: mở app, xem ba tab theo bảng màu, dialog Hướng dẫn, các c
 1. Detailz là LoRA Wan 2.1: có thể không tác dụng hoặc làm lệch màu trên Wan 2.2 low-noise. Harness (1)/(2) cùng seed trả lời câu này; phương án sau: Instareal_low (614 MB, cần hỏi lại trước khi tải).
 2. Trang phục theo video mẫu có thể vẫn không cởi áo (Window 3 bắt đầu từ frame còn mặc áo) hoặc làm mặt trôi; harness (4) kiểm. Phương án sau: ảnh nhân vật thứ hai từ giây X, cắt Driving Video thành hai job.
 3. Story dùng tên ảnh có ký tự `%`; đường dẫn ghép bằng `Path`, không qua shell.
+
+## Kết quả đo (2026-10-03, RTX 5070 Ti Laptop 12 GB)
+
+Chi tiết từng lần chạy nằm trong `logs/simple_app_harness.log` (không commit); ảnh ghép frame trong `logs/`.
+
+| # | Việc | Kết quả |
+|---|---|---|
+| 1 | `--check-reel` day_77_1, 10 s, `480x832`, SVI 2 Pro 2 Window, seed 20261003 | 10.09 s (323 frame @ 32 fps), 24 phút. Hành động đúng kịch bản (giây 3 khoe cơ tay, giây 9 vẫy tay cận mặt); mặt và tóc giữ được. Cận giây 9: da ngực lốm đốm đỏ, da mặt hơi bệt. Chỉ còn Final Video trong `outputs/` (1 Intermediate Video đã bị thay). |
+| 2 | như (1) thêm `--detail` (Detailz `0;0.6`) | 10.09 s, 24 phút. Khác (1) rất ít: da mặt đều màu hơn một chút, vệt đỏ ở má và ngực nhạt hơn; tóc gần như giống hệt. Detailz ở 0.6 chỉ có tác dụng nhẹ; lốm đốm ở cận có lẽ chủ yếu do 480p. |
+| 3 | `--check-multi` day_24_1/Ryo, 3 Segment 3 + 4 + 4 s | 11.03 s (353 frame @ 32 fps), 13 phút, khoảng 51 giây/bước. Đi đúng qua từng Keyframe theo Story; giữ hình lấp lánh và sao trên má như ảnh. |
+| 4 | `--check-motion` Klein + vietnameseboy, Animate 2, 16 s, `--outfit` | 16.06 s (257 frame @ 16 fps), 1 giờ 5 phút, 3 Intermediate Video đã bị thay. Âm thanh: Driving Video có, video ra có. **Trang phục không đổi:** giây 11–13 hai người làm động tác kéo áo qua đầu nhưng áo vẫn trên người, giây 15 vẫn mặc áo; mặt giữ ổn. Tùy chọn "Trang phục theo video mẫu" (chế độ `UV`) không giải được đoạn cởi áo. |
+
+Hướng tiếp theo cho đoạn cởi áo: phương án B ở Rủi ro 2 (ảnh nhân vật ở trần cho phần sau giây X, cắt Driving Video thành hai job); chờ người dùng quyết.
