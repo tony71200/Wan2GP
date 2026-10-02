@@ -65,7 +65,7 @@ Dialog thêm: "Ảnh cận mặt: bật *Giữ da & tóc*, nên chọn 720p."
 
 `python simple_app.py --check-multi <thư mục> [--detail]` đọc `<thư mục>/story.txt`.
 
-Định dạng Story: các khối cách nhau bởi dòng trống; dòng đầu khối là `<tên ảnh> : <thời gian> :`, các dòng sau là nội dung. `<thời gian>` là khoảng `0–3s` / `0-3s` (thời lượng = cuối − đầu) hoặc thời lượng `3s` / `3`. Hàm thuần `parse_story(text) -> list[tuple[str, int, str]]` trả (tên ảnh, số giây, prompt gộp một dòng), theo thứ tự trong file; thời lượng ngoài 1–5 giây hoặc dòng đầu sai định dạng → `ValueError` có số dòng.
+Định dạng Story: các khối cách nhau bởi dòng trống; dòng đầu khối là `<tên ảnh> : <thời gian> :`, các dòng sau là nội dung. `<thời gian>` là khoảng `0–3s` / `0-3s` (thời lượng = cuối − đầu) hoặc thời lượng `3s` / `3`. Hàm thuần `parse_story(text) -> list[tuple[str, int, str]]` trả (tên ảnh, số giây, prompt gộp một dòng), theo thứ tự trong file; thời lượng ngoài 1–5 giây hoặc dòng đầu sai định dạng → `ValueError` nêu dòng đầu khối bị lỗi.
 
 Ảnh trong thư mục mà Story không nhắc tới thì bỏ qua. Prompt giữ nguyên văn, Mô tả nhân vật chung để trống. Story hiện có (`D:\001_Personal_Proj\Comfy\PostIG\day_24_1\Ryo\story.txt`) cho 3 Segment 3 + 4 + 4 = 11 giây; ảnh 832×1216 → `480x832`. Mong đợi video 11 s ± 0.2.
 
