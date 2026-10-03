@@ -263,6 +263,9 @@ def test_detail_lora():
     own = reels_settings({}, image="a.png", prompt="p", resolution="480x832", seconds=5, seed=1, loras=[DETAIL_LORA], detail=True)
     assert own["activated_loras"] == [DETAIL_LORA]
     assert DETAIL_LORA in multi_settings({}, images=["a.png"], durations=[2], prompts=["w"], common="", resolution="480x832", seed=1, detail=True)["activated_loras"]
+    strong = reels_settings({}, image="a.png", prompt="p", resolution="480x832", seconds=5, seed=1, detail=1.0)
+    assert strong["activated_loras"] == [DETAIL_LORA] and strong["loras_multipliers"] == "0;1"
+    assert reels_settings({}, image="a.png", prompt="p", resolution="480x832", seconds=5, seed=1, detail=0)["activated_loras"] == []
     assert DETAIL_LORA in extend_settings({}, video="v.mp4", anchor="a.png", prompt="p", resolution="480x832", seconds=3, seed=1, detail=True)["activated_loras"]
 
 

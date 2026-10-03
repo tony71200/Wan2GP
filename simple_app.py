@@ -138,14 +138,16 @@ def parse_ideas(text):
 
 
 DETAIL_LORA = "detailz-wan.safetensors"  # loras/wan; Wan 2.1 detail enhancer, run on the low-noise phase only
-DETAIL_MULT = "0;0.6"
+DETAIL_STRENGTH = 0.6
 
 
 def _lora_settings(loras, high, low, smooth, detail=False):
+    """`detail`: False/0 = off, True = DETAIL_STRENGTH, a number = that strength (low-noise phase only)."""
     names, mults = pair_loras(list(loras or []), high, low)
     if detail and DETAIL_LORA not in names:
+        strength = DETAIL_STRENGTH if detail is True else float(detail)
         names.append(DETAIL_LORA)
-        mults = f"{mults} {DETAIL_MULT}".strip()
+        mults = f"{mults} 0;{strength:g}".strip()
     return {
         "activated_loras": names,
         "loras_multipliers": mults,
@@ -988,7 +990,9 @@ def run_check(session, flag, args):
 
     parser = argparse.ArgumentParser(prog=f"simple_app.py {flag}")
     parser.add_argument("inputs", nargs="*")
-    parser.add_argument("--detail", action="store_true", help="add the Detailz skin & hair LoRA")
+    parser.add_argument("--detail", nargs="?", type=float, const=DETAIL_STRENGTH, default=0,
+                        help="add the Detailz skin & hair LoRA, optionally with a strength (default %(const)s)")
+    parser.add_argument("--quality", choices=list(RESOLUTIONS), default="480p")
     parser.add_argument("--outfit", action="store_true", help="Motion Control: outfit follows the driving video")
     parser.add_argument("--seed", type=int, default=-1)
     opts = parser.parse_args(args)
@@ -1043,7 +1047,7 @@ def run_check(session, flag, args):
             w, h = _image_size(image)
             model, windows = reel_windows(seconds)
             settings = reels_settings(
-                session.get_default_settings(model), image=image, prompt=prompt, resolution=pick_resolution(w, h),
+                session.get_default_settings(model), image=image, prompt=prompt, resolution=pick_resolution(w, h, opts.quality),
                 seconds=seconds, seed=opts.seed, detail=opts.detail,
             )
             check("reel", settings, windows, seconds, (0, 3, 6, 9, 12), image)
@@ -1063,7 +1067,7 @@ def run_check(session, flag, args):
         w, h = _image_size(images[0])
         settings = multi_settings(
             session.get_default_settings(REELS_MODEL), images=images, durations=durations,
-            prompts=[prompt for *_, prompt in story], common="", resolution=pick_resolution(w, h),
+            prompts=[prompt for *_, prompt in story], common="", resolution=pick_resolution(w, h, opts.quality),
             seed=opts.seed, detail=opts.detail,
         )
         starts = [sum(durations[:i]) for i in range(len(durations))]
@@ -1078,7 +1082,7 @@ def run_check(session, flag, args):
         frames = motion_frames(fps, total, limit)
         settings = motion_settings(
             session.get_default_settings(model), image=image, video=video, description="",
-            resolution=pick_resolution(w, h), frames=frames, seed=opts.seed, model=model, audio=True, outfit=opts.outfit,
+            resolution=pick_resolution(w, h, opts.quality), frames=frames, seed=opts.seed, model=model, audio=True, outfit=opts.outfit,
         )
         expected = min(limit, total / fps) if limit else total / fps
         out = check("motion", settings, sliding_windows(frames, *MOTION_WINDOWS[model]), expected, (0, 8, 11, 13, 15), image,
