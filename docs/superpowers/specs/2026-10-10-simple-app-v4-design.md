@@ -83,7 +83,7 @@ Nút **Viết chi tiết** của card i gọi `write_segment` với `image = ả
 
 ### Think
 
-`enhance()` thêm tham số `think=False` và `purpose=""` (để ghi log); chế độ gửi cho Wan2GP là `wgp.build_prompt_enhancer_value("TI", think)` (thêm chữ `K`). "Viết chi tiết" ở tab Reels và `write_segment` bật; "3 ý tưởng" và caption không bật.
+`enhance()` thêm tham số `think=False` và `purpose=""` (để ghi log); chế độ gửi cho Wan2GP là `wgp.build_prompt_enhancer_value("TI", think)` (thêm chữ `K`). **Mặc định tắt ở mọi chỗ** (đổi so với bản duyệt ngày 2026-10-10): lần chạy harness đầu tiên, Segment 1–2 có Think ra đúng, nhưng Segment 3 mất 3 phút 53 giây rồi chỉ trả về đuôi phần suy luận đếm từ của Qwen, không có dòng `(at N seconds:` nào, vì 512 token sinh bị suy luận ăn hết. Tham số giữ lại để thử sau khi có cách nới token. `write_segment` kiểm tra `has_timed_lines(out)`: không có dòng `(at` thì gọi lại một lần, vẫn không có thì `RuntimeError` nêu đoạn lỗi, để prompt hỏng không lọt vào job.
 
 ### Tab Reels
 

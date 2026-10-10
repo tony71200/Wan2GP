@@ -7,7 +7,7 @@ from simple_app import (
     ANIMATE_MODEL, FUSIONX_LORA, MOTION_MODELS, MOTION_WINDOWS, motion_frames, sliding_windows,
     estimate_seconds, fmt_minutes, eta_text, load_calib, save_calib,
     DETAIL_LORA, parse_story, log_block,
-    multi_prompt, segment_instructions, segment_request, strip_think, VEED_RULES,
+    multi_prompt, segment_instructions, segment_request, strip_think, VEED_RULES, has_timed_lines,
 )
 
 
@@ -262,6 +262,13 @@ def test_segment_request():
     )
     assert segment_request("", "", 3) == "Goal: Continue the scene naturally\nThe clip lasts 3 seconds.\nThe clip ends freely."
     assert segment_request(" a  b ", " c\nd ", 2, previous="") == "Character and setting: a b\nGoal: c d\nThe clip lasts 2 seconds.\nThe clip ends freely."
+
+
+def test_has_timed_lines():
+    assert has_timed_lines("(at 0 seconds: x)\n(at 2 seconds: y)")
+    assert has_timed_lines("note\n(At 0 seconds: x)")
+    assert not has_timed_lines("* Max 25 words? Yes.\n* English? Yes.")
+    assert not has_timed_lines("")
 
 
 def test_strip_think():

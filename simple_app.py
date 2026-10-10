@@ -512,6 +512,11 @@ POSE_INSTRUCTIONS = (
 )
 
 
+def has_timed_lines(text):
+    """True when `text` holds at least one `(at N seconds:` line (what the video model expects)."""
+    return any(line.lower().startswith("(at ") for line in _lines(text))
+
+
 def write_segment(session, image, end_image, seconds, common, hint, previous=None, progress=None, tab="multi", index=0):
     """Timed lines for one Multi Image segment: the start image, the end image's pose (captioned first),
     the common description, the user's hint and the previous segment's last line."""
@@ -519,8 +524,13 @@ def write_segment(session, image, end_image, seconds, common, hint, previous=Non
     if end_image:
         caption = enhance(session, "", "Describe this image.", end_image, POSE_INSTRUCTIONS, progress, purpose=f"caption {index + 1}", tab=tab)
     request = segment_request(common, hint, seconds, caption, previous)
-    return enhance(session, "", request, image, segment_instructions(int(seconds), bool(end_image), bool(_lines(previous))), progress,
-                   think=True, purpose=f"segment {index + 1}", tab=tab)
+    instructions = segment_instructions(int(seconds), bool(end_image), bool(_lines(previous)))
+    # Think is off: with the 512-token budget Qwen3.5 spends it on reasoning and the timed lines get cut (2026-10-10, segment 3)
+    for attempt in range(2):
+        out = enhance(session, "", request, image, instructions, progress, purpose=f"segment {index + 1}", tab=tab)
+        if has_timed_lines(out):
+            return out
+    raise RuntimeError(f"Đoạn {index + 1}: enhancer không trả về dòng (at N seconds:) sau 2 lần; xem logs/simple_app.log")
 
 
 def _image_size(path):
@@ -836,7 +846,7 @@ def build_ui(session):
             raise gr.Error("Nhập ý ngắn hoặc chọn một ý tưởng trước.")
         if active["job"] is not None:
             raise gr.Error("Đang tạo video, chờ xong rồi gợi ý.")
-        return enhance(session, "", hint.strip(), image, detail_instructions(int(seconds)), progress, think=True, purpose="detail", tab="reels")
+        return enhance(session, "", hint.strip(), image, detail_instructions(int(seconds)), progress, purpose="detail", tab="reels")
 
     # ---------- Reels Multi Image ----------
     def card_status(n, i, seconds):
@@ -1208,7 +1218,7 @@ def run_check(session, flag, args):
             ideas = parse_ideas(enhance(session, "", "Suggest short video ideas for this image.", image, ideas_instructions(seconds), purpose="ideas", tab=flag))
             print("IDEAS:", ideas)
             assert ideas, "no ideas returned"
-            prompt = enhance(session, "", ideas[0], image, detail_instructions(seconds), think=True, purpose="detail", tab=flag)
+            prompt = enhance(session, "", ideas[0], image, detail_instructions(seconds), purpose="detail", tab=flag)
             print("DETAIL:", prompt)
             assert prompt.strip(), "empty detailed prompt"
             print("enhancer check ok")
