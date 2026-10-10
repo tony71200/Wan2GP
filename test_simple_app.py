@@ -7,7 +7,7 @@ from simple_app import (
     ANIMATE_MODEL, FUSIONX_LORA, MOTION_MODELS, MOTION_WINDOWS, motion_frames, sliding_windows,
     estimate_seconds, fmt_minutes, eta_text, load_calib, save_calib,
     DETAIL_LORA, parse_story, log_block,
-    multi_prompt, segment_instructions, segment_request, strip_think, VEED_RULES, has_timed_lines,
+    multi_prompt, segment_instructions, segment_request, strip_think, VEED_RULES, has_timed_lines, trim_timed_lines,
 )
 
 
@@ -269,6 +269,13 @@ def test_has_timed_lines():
     assert has_timed_lines("note\n(At 0 seconds: x)")
     assert not has_timed_lines("* Max 25 words? Yes.\n* English? Yes.")
     assert not has_timed_lines("")
+
+
+def test_trim_timed_lines():
+    text = "(at 0 seconds: a)\n\nnote\n(at 1 seconds: b)\n(at 2 seconds: c)\n(at 10 seconds: d)"
+    assert trim_timed_lines(text, 2) == "(at 0 seconds: a)\nnote\n(at 1 seconds: b)"
+    assert trim_timed_lines(text, 10) == "(at 0 seconds: a)\nnote\n(at 1 seconds: b)\n(at 2 seconds: c)"
+    assert trim_timed_lines("(at 2 seconds: c)", 2) == ""
 
 
 def test_strip_think():

@@ -512,9 +512,18 @@ POSE_INSTRUCTIONS = (
 )
 
 
+_AT = re.compile(r"^\(at\s+(\d+(?:\.\d+)?)\s*seconds?\s*:", re.I)
+
+
 def has_timed_lines(text):
     """True when `text` holds at least one `(at N seconds:` line (what the video model expects)."""
-    return any(line.lower().startswith("(at ") for line in _lines(text))
+    return any(_AT.match(line) for line in _lines(text))
+
+
+def trim_timed_lines(text, seconds):
+    """Drop `(at N seconds:` lines at or past the clip end; the enhancer likes to add one for the final pose."""
+    kept = [line for line in _lines(text) if not (m := _AT.match(line)) or float(m[1]) < seconds]
+    return "\n".join(kept)
 
 
 def write_segment(session, image, end_image, seconds, common, hint, previous=None, progress=None, tab="multi", index=0):
@@ -527,7 +536,7 @@ def write_segment(session, image, end_image, seconds, common, hint, previous=Non
     instructions = segment_instructions(int(seconds), bool(end_image), bool(_lines(previous)))
     # Think is off: with the 512-token budget Qwen3.5 spends it on reasoning and the timed lines get cut (2026-10-10, segment 3)
     for attempt in range(2):
-        out = enhance(session, "", request, image, instructions, progress, purpose=f"segment {index + 1}", tab=tab)
+        out = trim_timed_lines(enhance(session, "", request, image, instructions, progress, purpose=f"segment {index + 1}", tab=tab), seconds)
         if has_timed_lines(out):
             return out
     raise RuntimeError(f"Đoạn {index + 1}: enhancer không trả về dòng (at N seconds:) sau 2 lần; xem logs/simple_app.log")
