@@ -245,7 +245,7 @@ def test_segment_instructions():
     s8 = segment_instructions(8)
     assert "in order: 0, 1, 2, 3, 4, 5, 6, 7." in s8
     assert "in order: 0, 2, 4, 6, 8." in segment_instructions(9)
-    assert "in order: 0, 2, 4, 6, 8, 10, 12, 14." in segment_instructions(15)
+    assert "in order: 0, 2, 4, 6, 8, 10, 12, 14. No other lines, none at or after 15 seconds." in segment_instructions(15)
     assert "end pose" not in s8 and "previous clip" not in s8
     assert "end pose" in segment_instructions(5, has_end=True)
     assert "previous clip" in segment_instructions(5, has_prev=True)

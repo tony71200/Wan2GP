@@ -450,10 +450,10 @@ def segment_instructions(seconds, has_end=False, has_prev=False):
         "The camera is static on the first line and on the last line.\n"
     )
     if has_prev:
-        text += "The first line continues exactly the action the previous clip ended with, with no pause or reset.\n"
+        text += "The first line repeats the exact pose and action the previous clip ended with, so the join is seamless; the new action starts on the second line.\n"
     if has_end:
         text += "The last line brings the person exactly into the end pose given by the user; pace the earlier lines so this pose is reachable in time.\n"
-    return text + "Output rules:\n" + f"Write one line for each of these seconds, in order: {marks}.\n" + _LINE_RULES
+    return text + "Output rules:\n" + f"Write exactly one line for each of these seconds, in order: {marks}. No other lines, none at or after {int(seconds)} seconds.\n" + _LINE_RULES
 
 
 def segment_request(common, hint, seconds, caption=None, previous=None):
