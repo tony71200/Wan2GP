@@ -475,8 +475,8 @@ def strip_think(text):
     return re.sub(r"<think>.*?</think>\s*", "", str(text or ""), flags=re.S).strip()
 
 
-def enhance(session, model_type, text, image, instructions=None, progress=None):
-    """Run Wan2GP's local prompt enhancer on (text, image) and return the generated text."""
+def enhance(session, model_type, text, image, instructions=None, progress=None, think=False, purpose="", tab=""):
+    """Run Wan2GP's local prompt enhancer on (text, image) and return the generated text; every call is logged."""
     wgp = sys.modules["wgp"]
     from shared.utils.model_unload import wait_for_model_unload
     from shared.utils.process_locks import acquire_GPU_ressources, release_GPU_ressources
@@ -484,20 +484,43 @@ def enhance(session, model_type, text, image, instructions=None, progress=None):
     # ponytail: session._state is private to WanGPSession; switch to the plugin-provided state if the API changes
     state = session._state
     model_def = wgp.get_model_def(model_type) if model_type else None
+    mode = wgp.build_prompt_enhancer_value("TI", think)  # "TIK" = text + image + Qwen thinking
     wait_for_model_unload()
     acquire_GPU_ressources(state, "prompt_enhancer", "Prompt Enhancer")
     try:
         wgp.ensure_prompt_enhancer_loaded(progress=progress)
         out = wgp.process_prompt_enhancer(
-            model_type, model_def, "TI", [text], image, None, False, False, -1,
+            model_type, model_def, mode, [text], image, None, False, False, -1,
             prompt_enhancer_instructions=instructions,
         )
+    except Exception as e:
+        log_block({"command": "error", "tab": tab, "purpose": purpose, "prompt": text, "error": repr(e)})
+        raise
     finally:
         wgp.unload_prompt_enhancer_runtime()
         if wgp.enhancer_offloadobj is not None:
             wgp.enhancer_offloadobj.unload_all()
         release_GPU_ressources(state, "prompt_enhancer")
-    return str(out[0]) if out else ""
+    result = strip_think(out[0]) if out else ""
+    log_block({"command": "enhance", "tab": tab, "purpose": purpose, "image": image, "think": think, "input": text, "output": result})
+    return result
+
+
+POSE_INSTRUCTIONS = (
+    "You are an AI vision model. Describe the provided image in ONE English sentence: the person's pose, where they are in the frame, "
+    "what they wear or hold, and the camera framing (distance and angle). No commentary, no list, no meta-text."
+)
+
+
+def write_segment(session, image, end_image, seconds, common, hint, previous=None, progress=None, tab="multi", index=0):
+    """Timed lines for one Multi Image segment: the start image, the end image's pose (captioned first),
+    the common description, the user's hint and the previous segment's last line."""
+    caption = None
+    if end_image:
+        caption = enhance(session, "", "Describe this image.", end_image, POSE_INSTRUCTIONS, progress, purpose=f"caption {index + 1}", tab=tab)
+    request = segment_request(common, hint, seconds, caption, previous)
+    return enhance(session, "", request, image, segment_instructions(int(seconds), bool(end_image), bool(_lines(previous))), progress,
+                   think=True, purpose=f"segment {index + 1}", tab=tab)
 
 
 def _image_size(path):
@@ -786,7 +809,7 @@ def build_ui(session):
         if active["job"] is not None:
             raise gr.Error("Đang tạo video, chờ xong rồi gợi ý.")
         text = (hint or "").strip() or "Suggest short video ideas for this image."
-        ideas = parse_ideas(enhance(session, "", text, image, ideas_instructions(int(seconds)), progress))
+        ideas = parse_ideas(enhance(session, "", text, image, ideas_instructions(int(seconds)), progress, purpose="ideas", tab="reels"))
         if not ideas:
             raise gr.Error("Không nhận được ý tưởng nào, thử lại.")
         return gr.update(choices=ideas, value=None)
@@ -798,7 +821,7 @@ def build_ui(session):
             raise gr.Error("Nhập ý ngắn hoặc chọn một ý tưởng trước.")
         if active["job"] is not None:
             raise gr.Error("Đang tạo video, chờ xong rồi gợi ý.")
-        return enhance(session, "", hint.strip(), image, detail_instructions(int(seconds)), progress)
+        return enhance(session, "", hint.strip(), image, detail_instructions(int(seconds)), progress, think=True, purpose="detail", tab="reels")
 
     # ---------- Reels Multi Image ----------
     def multi_status(n, quality, *vals):
@@ -1121,10 +1144,10 @@ def run_check(session, flag, args):
             prompt = Path(prompt_file).read_text(encoding="utf-8")
         else:
             print("enhancer_enabled =", sys.modules["wgp"].server_config.get("enhancer_enabled", 0))
-            ideas = parse_ideas(enhance(session, "", "Suggest short video ideas for this image.", image, ideas_instructions(seconds)))
+            ideas = parse_ideas(enhance(session, "", "Suggest short video ideas for this image.", image, ideas_instructions(seconds), purpose="ideas", tab=flag))
             print("IDEAS:", ideas)
             assert ideas, "no ideas returned"
-            prompt = enhance(session, "", ideas[0], image, detail_instructions(seconds))
+            prompt = enhance(session, "", ideas[0], image, detail_instructions(seconds), think=True, purpose="detail", tab=flag)
             print("DETAIL:", prompt)
             assert prompt.strip(), "empty detailed prompt"
             print("enhancer check ok")
