@@ -1158,6 +1158,8 @@ def run_check(session, flag, args):
     parser.add_argument("--quality", choices=list(RESOLUTIONS), default="480p")
     parser.add_argument("--outfit", action="store_true", help="Motion Control: outfit follows the driving video")
     parser.add_argument("--seed", type=int, default=-1)
+    parser.add_argument("--enhance", action="store_true", help="Multi: rewrite every segment with the enhancer before generating")
+    parser.add_argument("--lang", choices=["en", "vi"], default="en", help="Multi: which (VI)/(EN) lines of story.txt to use")
     opts = parser.parse_args(args)
     stamp = time.strftime("%Y-%m-%d-%H%M%S")
 
@@ -1187,6 +1189,10 @@ def run_check(session, flag, args):
             "video": out, "sheet": sheet,
         }
         log_block(entry, HARNESS_LOG)
+        log_block({
+            "command": "generate", "tab": flag, "model": settings["model_type"], "resolution": settings["resolution"], "seed": settings["seed"],
+            "windows": len(windows), "prompt": settings["prompt"], "video": out, "took": fmt_minutes(took),
+        })
         print(f"duration {got:.2f}s ({total} frames @ {fps:g} fps), expected {expected:.2f}s; log: {HARNESS_LOG}")
         assert ok, "wrong duration"
         return out
@@ -1224,18 +1230,24 @@ def run_check(session, flag, args):
     elif flag == "--check-multi":
         (folder,) = opts.inputs
         folder = Path(folder)
-        common, story = parse_story((folder / "story.txt").read_text(encoding="utf-8"))
+        common, story = parse_story((folder / "story.txt").read_text(encoding="utf-8"), opts.lang)
         images = [str(folder / name) for name, _, _ in story]
         durations = [seconds for _, seconds, _ in story]
+        prompts = [prompt for *_, prompt in story]
+        if opts.enhance:
+            for i, (image, seconds) in enumerate(zip(images, durations)):
+                end = images[i + 1] if i + 1 < len(images) else None
+                prompts[i] = write_segment(session, image, end, seconds, common, prompts[i], prompts[i - 1] if i else None, tab=flag, index=i)
+                print(f"SEGMENT {i + 1}:\n{prompts[i]}")
         w, h = _image_size(images[0])
         settings = multi_settings(
             session.get_default_settings(REELS_MODEL), images=images, durations=durations,
-            prompts=[prompt for *_, prompt in story], common=common, resolution=pick_resolution(w, h, opts.quality),
+            prompts=prompts, common=common, resolution=pick_resolution(w, h, opts.quality),
             seed=opts.seed, detail=opts.detail,
         )
         starts = [sum(durations[:i]) for i in range(len(durations))]
         check("multi", settings, [d * FPS + 1 for d in durations], sum(durations), (*starts, sum(durations) - 0.2), images[0],
-              {"segments": ", ".join(f"{name} {d}s" for name, d, _ in story)})
+              {"segments": ", ".join(f"{name} {d}s" for name, d, _ in story), "lang": opts.lang, "enhance": opts.enhance})
     elif flag == "--check-motion":
         image, video, *rest = opts.inputs
         model = ANIMATE_MODEL if rest and rest[0] == "animate" else MOTION_MODEL
