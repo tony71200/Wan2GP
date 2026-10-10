@@ -156,7 +156,7 @@ R4_4_Ivan_Ryo_20261012_00001.png : 20-23s :
 (EN) He walks past the camera, and the camera tilts upwards.
 ```
 
-Thời gian dự kiến ở 480p: cửa sổ 10 s khoảng 15–25 phút, ba cửa sổ còn lại khoảng 15 phút, enhancer 4 Segment × 3 lần gọi khoảng 5 phút. Chạy nền, log đọc bằng `tr '\r' '\n'`.
+Thời gian dự kiến ở 480p: cửa sổ 10 s khoảng 15–25 phút, ba cửa sổ còn lại khoảng 15 phút, enhancer 4 Segment × 3 lần gọi khoảng 5 phút. Chạy nền, log đọc bằng `tr '\r' '\n'`. Đặt `PYTHONUTF8=1` khi chạy (`cmd //c "set PYTHONUTF8=1&& call … activate.bat wan2gp && python -u simple_app.py …"`), nếu không `print` prompt tiếng Việt ra file log sẽ lỗi cp1252.
 
 ## 6. Hướng dẫn
 
@@ -196,6 +196,8 @@ Chi tiết từng lần chạy trong `logs/simple_app_harness.log` và `logs/sim
 
 | # | Việc | Kết quả |
 |---|---|---|
-| 7 | `--check-enhancer` | chưa chạy |
-| 8 | `--check-multi story4 --enhance` | chưa chạy |
-| 9 | `--check-multi story4 --lang vi` | chưa chạy |
+| 7 | `--check-enhancer` day_77_1/Ryo, 5 s | 3 ý tưởng; Viết chi tiết (lần này còn bật Think) ra đúng 5 dòng `(at 0–4 seconds:`, 19 từ mỗi dòng, máy static, không sót thẻ think; bước detail mất 2 phút 36 giây kể cả nạp model. Log có hai khối `enhance`. |
+| 8a | `--check-multi story4 --enhance` lần 1, Think bật | Đoạn 1–2 ra đúng (đoạn 1: 2 s cầm khăn, 4 s đứng quay lưng, 6 s quấn, 8 s ngồi khớp ảnh 2). Đoạn 3 mất 3 phút 53 giây rồi chỉ trả về đuôi phần suy luận đếm từ, không có dòng `(at`: 512 token sinh bị suy luận ăn hết. Dừng job, tắt Think, thêm chốt `has_timed_lines`. |
+| 8 | `--check-multi story4 --enhance --seed 20261010`, Think tắt | 23.03 s (737 frame @ 32 fps), sinh 30 phút: cửa sổ 10 s (161 frame) 12 phút 20 giây, 185 giây/bước, khoảng 3.7 lần cửa sổ 5 s; ba cửa sổ 5 + 5 + 3 s khoảng 5 + 3 + 2.5 phút. Enhancer 4 đoạn khoảng 8 phút (12 lần gọi, nạp lại model mỗi lần). Không Think: đoạn 1 có 6 dòng (thừa dòng 10 s), vài dòng hơn 25 từ, quay lưng và quấn khăn gộp cùng giây 2. **Video:** mốc 0/10/15/20 s khớp đúng bốn ảnh, 22.8 s ngước lên trần theo prompt. Giây 1 cầm khăn, 1.5 s cầm khăn trước bụng hướng camera, 2–2.5 s quay lưng và quấn, 4 s ngồi xuống: **thứ tự quay lưng rồi quấn đã đúng** (video 10-09 quấn khi còn hướng camera). Nhưng cả chuỗi xong trong 5 s đầu rồi ngồi yên 5 s: đoạn 10 s bị model dồn động tác về nửa đầu, không lặp động tác. Mối nối 10 s và 20 s mượt (10 s chỉ đổi nhẹ tông màu); **mối nối 15 s giật**: 15.25 s tay còn trên tóc, 15.5 s đã nhổm người, vì dòng đầu đoạn 3 viết "begins to lift his torso" thay vì giữ tư thế cuối đoạn 2. Mặt giữ nguyên suốt 23 s. Ảnh ghép: `logs/2026-10-10-111056_multi*.jpg`. |
+| 9 | `--check-multi story4 --lang vi --seed 20261010`, không enhancer, prompt tiếng Việt gửi thẳng | 23.03 s (737 frame @ 32 fps), 30 phút. **Wan 2.2 hiểu tiếng Việt tốt hơn dự đoán:** 1 s cầm khăn hướng camera, 2.5–3 s quay hẳn lưng về camera (chưa quấn), 3.5–6.5 s quấn khăn và bước sang trái, ngồi xuống đúng ảnh 2 ở 10 s; thứ tự "quay lưng rồi mới quấn" đúng và động tác trải đều 10 s hơn bản EN theo giây (bản EN dồn vào 5 s đầu). Mốc 10/15/20 s khớp ảnh; 22.8 s đứng nhìn lên chếch phải, camera không ngước rõ như prompt. Mặt ở giây 22.8 trôi nhẹ hơn bản EN. Kết luận: prompt tiếng Việt dùng được cho hành động đơn giản; chưa đo với câu dài hoặc từ chuyên môn máy quay. Ảnh ghép: `logs/2026-10-10-114448_multi*.jpg`. |
+| 10 | App chạy thật, gọi handler qua Gradio API (`gradio_client`, browser pane không mở được hộp chọn file); bố cục xem bằng browser pane | Bố cục: slider tới 15, card 1 ở 10 s hiện cảnh báo vàng, Thêm ảnh đổi trạng thái card 2 thành "Kết thúc ở ảnh 3", ô Prompt đã gửi ở ba tab, Hướng dẫn có mục mới. Multi 2 ảnh (R3_1, R1_4) 2 + 2 s: Viết chi tiết card 1 49 giây, ra dòng `(at 0/1 seconds:` (kèm một dòng 2 s thừa, nay bị `trim_timed_lines` cắt); Viết chi tiết tất cả 49 giây, đoạn 2 mở đầu đúng tư thế cuối đoạn 1; Tạo Video 6 phút, Prompt đã gửi hiện hai cửa sổ `[/duration=2s]` với dòng theo giây nguyên văn. Reels: Viết chi tiết 48 giây ra 2 dòng, Tạo Video 2 s 3 phút, Prompt đã gửi hiện prompt. `logs/simple_app.log` có 6 khối `enhance` và 2 khối `generate` tương ứng. |
