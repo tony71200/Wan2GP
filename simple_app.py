@@ -202,20 +202,27 @@ def extend_settings(defaults, *, video, anchor, prompt, resolution, seconds, see
 MAX_IMAGES = 6
 
 
-def _one_line(*parts):
-    """Join non-empty parts with '. ' on a single line (PW windows must not contain blank lines)."""
-    cleaned = [" ".join(str(p).split()).rstrip(".") for p in parts if p and str(p).strip()]
-    return ". ".join(c for c in cleaned if c)
+def _lines(text):
+    """Non-empty stripped lines of `text` (PW windows must not contain blank lines)."""
+    return [line.strip() for line in str(text or "").splitlines() if line.strip()]
+
+
+def multi_prompt(common, prompts, durations):
+    """One `[/duration=Ns]` paragraph per segment: the common description first, then the segment's lines verbatim."""
+    paragraphs = []
+    for d, p in zip(durations, prompts):
+        body = [" ".join(str(common or "").split())] + _lines(p)
+        paragraphs.append(" ".join([f"[/duration={int(d)}s]", "\n".join(b for b in body if b)]).rstrip())
+    return "\n\n".join(paragraphs)
 
 
 def multi_settings(defaults, *, images, durations, prompts, common, resolution, seed, loras=(), high=1.0, low=0.0, smooth=True, detail=False):
     """One Lightning job through every image: window i starts at image i, lasts durations[i]
     and ends on image i+1; the last window has no end image."""
-    paragraphs = [f"[/duration={int(d)}s] {_one_line(common, p)}" for d, p in zip(durations, prompts)]
     return {
         **defaults,
         "model_type": REELS_MODEL,
-        "prompt": "\n\n".join(paragraphs),
+        "prompt": multi_prompt(common, prompts, durations),
         "multi_prompts_gen_type": "PW",
         "image_prompt_type": "SE" if len(images) > 1 else "S",
         "image_start": images[0],
@@ -242,19 +249,43 @@ _STORY_HEAD = re.compile(
 )
 
 
-def parse_story(text):
-    """[(image name, whole seconds, prompt on one line)] from a Story file, in file order."""
-    story = []
-    for block in re.split(r"\n\s*\n", str(text).lstrip("﻿").strip()):
+_LANG = re.compile(r"^\((vi|en)\)\s*", re.I)
+_BULLET = re.compile(r"^\s*(?:[-*•]|\d+[.):])\s*")
+_IMAGE_EXT = re.compile(r"\.(?:png|jpe?g|webp)\b", re.I)
+
+
+def _story_lines(lines, lang):
+    """Lines of a Story block for `lang`: bullets dropped, `(VI)`/`(EN)` prefixes filtered, unprefixed lines kept."""
+    out = []
+    for line in lines:
+        line = _BULLET.sub("", line).strip()
+        m = _LANG.match(line)
+        if m:
+            if m[1].lower() != lang:
+                continue
+            line = line[m.end():].strip()
+        if line:
+            out.append(line)
+    return out
+
+
+def parse_story(text, lang="en"):
+    """(common description, [(image name, whole seconds, prompt lines)]) from a Story file, in file order.
+    A first block without an image heading is the common description."""
+    common, story = "", []
+    for i, block in enumerate(re.split(r"\n\s*\n", str(text).lstrip("﻿").strip())):
         head, *body = block.strip().splitlines()
         m = _STORY_HEAD.match(head.strip())
         if not m:
+            if i == 0 and not _IMAGE_EXT.search(head):
+                common = " ".join(_story_lines(block.splitlines(), lang))
+                continue
             raise ValueError(f"Story: không đọc được dòng đầu khối: {head!r}")
         seconds = float(m["end"]) - float(m["start"] or 0)
-        if seconds != int(seconds) or not 1 <= seconds <= 5:
-            raise ValueError(f"Story: {m['name'].strip()}: thời lượng {seconds:g}s phải là số giây nguyên từ 1 đến 5")
-        story.append((m["name"].strip(), int(seconds), _one_line(" ".join(body))))
-    return story
+        if seconds != int(seconds) or not 1 <= seconds <= 15:
+            raise ValueError(f"Story: {m['name'].strip()}: thời lượng {seconds:g}s phải là số giây nguyên từ 1 đến 15")
+        story.append((m["name"].strip(), int(seconds), "\n".join(_story_lines(body, lang))))
+    return common, story
 
 
 # (steps, seconds per step, reference frames, reference pixels), measured 2026-09-30 on the RTX 5070 Ti Laptop 12 GB
@@ -268,17 +299,18 @@ LOAD_SECONDS = 120  # model load + VAE decode
 MODEL_LABELS = {REELS_MODEL: "Lightning v2", EXTEND_MODEL: "SVI 2 Pro", MOTION_MODEL: "Animate 2", ANIMATE_MODEL: "Animate 14B"}
 TIMINGS = ROOT / "simple_app_timings.json"
 HARNESS_LOG = ROOT / "logs" / "simple_app_harness.log"
+APP_LOG = ROOT / "logs" / "simple_app.log"
 
 
-def log_harness(entry, path=HARNESS_LOG):
-    """Append one block to the harness log: a '=== time command' line, then 'key: value' lines."""
+def log_block(entry, path=APP_LOG):
+    """Append one block: a '=== time command' line, then 'key: value' lines; later lines of a value are indented."""
     import time
 
     entry = dict(entry)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [f"=== {time.strftime('%Y-%m-%d %H:%M:%S')} {entry.pop('command', '')}"]
-    lines += [f"{k}: {v}" for k, v in entry.items()]
+    lines += [f"{k}: " + str(v).replace("\n", "\n  ") for k, v in entry.items()]
     with path.open("a", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n\n")
 
@@ -287,8 +319,8 @@ def estimate_seconds(model, windows, resolution, calib=None):
     """Expected wall time of a job; `windows` lists the frame count of each sliding window."""
     steps, per_step, ref_frames, ref_pixels = SPEED[model]
     w, h = (int(v) for v in resolution.split("x"))
-    # ponytail: linear in frames x pixels (attention grows faster); the calibration ratio absorbs the error for usual sizes
-    work = sum(windows) * w * h / (ref_frames * ref_pixels)
+    # ponytail: f^1.5 sits between linear layers and quadratic attention; the calibration ratio absorbs the rest
+    work = sum(f * (f / ref_frames) ** 0.5 for f in windows) * w * h / (ref_frames * ref_pixels)
     return (LOAD_SECONDS + steps * per_step * work) * (calib or {}).get(model, 1.0)
 
 
@@ -373,21 +405,74 @@ def ideas_instructions(seconds=5):
     )
 
 
+VEED_RULES = (
+    "Each line describes exactly one main movement of the person and one concrete camera move (static, pan, tilt, dolly, slow push): "
+    "say how things move, do not re-describe the image.\n"
+    "Build the motion progressively: start subtle and grow through the clip.\n"
+    "Write in English even if the goal is written in another language.\n"
+)
+
+_SHOT_RULES = (
+    "Describe ONE continuous shot that starts exactly from the image: no cuts, no scene change, no change of location, lighting, weather or time of day.\n"
+    "The person must stay the same person for the whole video: same face, hairstyle, hair color, body, skin tone, outfit and accessories as in the image, "
+    "unless the goal says they put on, take off or pick up something. Never describe a different look.\n"
+    "Keep the motion natural and modest so the face stays recognizable. The camera is static or moves slowly.\n"
+    "The camera keeps the same distance and framing as the image: no zoom, no push-in, no close-up on the face; the person may walk closer by themselves.\n"
+)
+
+_LINE_RULES = (
+    "Each line must begin with \"(at X seconds:\" where X is that second number, followed by a dense, comma-separated visual description "
+    "of at most 25 words, all inside a single set of parentheses.\n"
+    "Do not include commentary, explanations, or meta-text."
+)
+
+
 # The model's own enhancer instructions ask for shot changes every second, which turns the person
 # into someone else. These keep one continuous shot and restate the subject on every line.
 def detail_instructions(seconds=5):
     return (
         "You are an AI vision model writing a prompt for an image-to-video model. Analyze the provided image and the user's goal.\n"
-        "Describe ONE continuous shot that starts exactly from the image: no cuts, no scene change, no change of location, lighting, weather or time of day.\n"
-        "The person must stay the same person for the whole video: same face, hairstyle, hair color, body, skin tone, outfit and accessories as in the image. Never describe a different look.\n"
-        "Keep the motion natural and modest so the face stays recognizable. The camera is static or moves slowly.\n"
-        "The camera keeps the same distance and framing as the image: no zoom, no push-in, no close-up on the face; the person may walk closer by themselves.\n"
+        + _SHOT_RULES + VEED_RULES +
         "Output rules:\n"
         f"Write one line per second, from 0 to {seconds - 1} seconds.\n"
-        "Each line must begin with \"(at X seconds:\" where X is the second number, followed by a dense, comma-separated visual description, all inside a single set of parentheses.\n"
         "Every line repeats the same subject and setting description taken from the image and changes only the action and the camera movement.\n"
-        "Do not include commentary, explanations, or meta-text."
+        + _LINE_RULES
     )
+
+
+def segment_instructions(seconds, has_end=False, has_prev=False):
+    """Per-second (or per-2-second above 8 s, for the 512-token window limit) lines for one Multi Image segment."""
+    step = 1 if seconds <= 8 else 2
+    marks = ", ".join(str(t) for t in range(0, int(seconds), step))
+    text = (
+        "You are an AI vision model writing a prompt for an image-to-video model. The image is the first frame of a clip; analyze it and the user's goal.\n"
+        + _SHOT_RULES + VEED_RULES +
+        "The camera is static on the first line and on the last line.\n"
+    )
+    if has_prev:
+        text += "The first line continues exactly the action the previous clip ended with, with no pause or reset.\n"
+    if has_end:
+        text += "The last line brings the person exactly into the end pose given by the user; pace the earlier lines so this pose is reachable in time.\n"
+    return text + "Output rules:\n" + f"Write one line for each of these seconds, in order: {marks}.\n" + _LINE_RULES
+
+
+def segment_request(common, hint, seconds, caption=None, previous=None):
+    """The user message for `segment_instructions`: setting, goal, length, end pose and the previous segment's last line."""
+    parts = []
+    if (common or "").strip():
+        parts.append(f"Character and setting: {' '.join(common.split())}")
+    parts.append(f"Goal: {' '.join(hint.split()) if (hint or '').strip() else 'Continue the scene naturally'}")
+    parts.append(f"The clip lasts {int(seconds)} seconds.")
+    parts.append(f"It must end exactly in this pose: {caption.strip()}" if caption else "The clip ends freely.")
+    last = _lines(previous)
+    if last:
+        parts.append(f"The previous clip ended with: {last[-1]}")
+    return "\n".join(parts)
+
+
+def strip_think(text):
+    """Drop a leaked Qwen `<think>…</think>` block."""
+    return re.sub(r"<think>.*?</think>\s*", "", str(text or ""), flags=re.S).strip()
 
 
 def enhance(session, model_type, text, image, instructions=None, progress=None):
@@ -1023,7 +1108,7 @@ def run_check(session, flag, args):
             **(extra or {}),
             "video": out, "sheet": sheet,
         }
-        log_harness(entry)
+        log_block(entry, HARNESS_LOG)
         print(f"duration {got:.2f}s ({total} frames @ {fps:g} fps), expected {expected:.2f}s; log: {HARNESS_LOG}")
         assert ok, "wrong duration"
         return out
@@ -1061,13 +1146,13 @@ def run_check(session, flag, args):
     elif flag == "--check-multi":
         (folder,) = opts.inputs
         folder = Path(folder)
-        story = parse_story((folder / "story.txt").read_text(encoding="utf-8"))
+        common, story = parse_story((folder / "story.txt").read_text(encoding="utf-8"))
         images = [str(folder / name) for name, _, _ in story]
         durations = [seconds for _, seconds, _ in story]
         w, h = _image_size(images[0])
         settings = multi_settings(
             session.get_default_settings(REELS_MODEL), images=images, durations=durations,
-            prompts=[prompt for *_, prompt in story], common="", resolution=pick_resolution(w, h, opts.quality),
+            prompts=[prompt for *_, prompt in story], common=common, resolution=pick_resolution(w, h, opts.quality),
             seed=opts.seed, detail=opts.detail,
         )
         starts = [sum(durations[:i]) for i in range(len(durations))]
@@ -1088,7 +1173,7 @@ def run_check(session, flag, args):
         out = check("motion", settings, sliding_windows(frames, *MOTION_WINDOWS[model]), expected, (0, 8, 11, 13, 15), image,
                     {"outfit": opts.outfit, "driving_audio": _has_audio(video)})
         audio_in, audio_out = _has_audio(video), _has_audio(out)
-        log_harness({"command": f"{flag} audio check", "driving_audio": audio_in, "output_audio": audio_out, "ok": audio_in == audio_out})
+        log_block({"command": f"{flag} audio check", "driving_audio": audio_in, "output_audio": audio_out, "ok": audio_in == audio_out}, HARNESS_LOG)
         print(f"audio: driving={audio_in} output={audio_out}")
         assert audio_in == audio_out, "output audio does not match the driving video"
     else:
