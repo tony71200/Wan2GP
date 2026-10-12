@@ -6,7 +6,8 @@ from simple_app import (
     multi_settings, aspect_mismatch, MAX_IMAGES,
     ANIMATE_MODEL, FUSIONX_LORA, MOTION_MODELS, MOTION_WINDOWS, motion_frames, sliding_windows,
     estimate_seconds, fmt_minutes, eta_text, load_calib, save_calib,
-    DETAIL_LORA, parse_story, log_harness,
+    DETAIL_LORA, parse_story, log_block,
+    multi_prompt, segment_instructions, segment_request, strip_think, VEED_RULES, has_timed_lines, trim_timed_lines,
 )
 
 
@@ -204,6 +205,17 @@ def test_instructions():
     assert "from 0 to 4 seconds" in detail_instructions()
 
 
+def test_multi_prompt():
+    assert multi_prompt("A man in a red coat.", ["(at 0 seconds: he waves)\n\n(at 1 seconds: he smiles)", "", "sits.\ndown"], [3, 2, 4]) == (
+        "[/duration=3s] A man in a red coat.\n(at 0 seconds: he waves)\n(at 1 seconds: he smiles)\n\n"
+        "[/duration=2s] A man in a red coat.\n\n"
+        "[/duration=4s] A man in a red coat.\nsits.\ndown"
+    )
+    assert multi_prompt("", ["waves"], [2]) == "[/duration=2s] waves"
+    assert multi_prompt("  two   words ", [" x \n\n y "], [1]) == "[/duration=1s] two words\nx\ny"
+    assert multi_prompt("", [""], [1]) == "[/duration=1s]"
+
+
 def test_multi_settings():
     s = multi_settings(
         {"num_inference_steps": 4}, images=["a.png", "b.png", "c.png"], durations=[3, 2, 4],
@@ -215,16 +227,66 @@ def test_multi_settings():
     assert s["image_start"] == "a.png" and s["image_end"] == ["b.png", "c.png"]
     assert s["multi_prompts_gen_type"] == "PW"
     assert s["prompt"] == (
-        "[/duration=3s] A man in a red coat. walks in\n\n"
-        "[/duration=2s] A man in a red coat\n\n"
-        "[/duration=4s] A man in a red coat. sits. down"
+        "[/duration=3s] A man in a red coat.\nwalks in\n\n"
+        "[/duration=2s] A man in a red coat.\n\n"
+        "[/duration=4s] A man in a red coat.\nsits.\ndown"
     )
     assert s["video_length"] == 145 and s["resolution"] == "480x832" and s["seed"] == 1
     assert s["loras_multipliers"] == "1;0" and s["temporal_upsampling"] == ""
     one = multi_settings({}, images=["a.png"], durations=[2], prompts=["waves"], common="", resolution="480x832", seed=-1)
     assert one["image_prompt_type"] == "S" and one["image_end"] is None
     assert one["prompt"] == "[/duration=2s] waves" and one["video_length"] == 33
+    long = multi_settings({}, images=["a.png", "b.png"], durations=[10, 5], prompts=["x", "y"], common="", resolution="480x832", seed=1)
+    assert long["video_length"] == 241
     assert MAX_IMAGES == 6
+
+
+def test_segment_instructions():
+    s8 = segment_instructions(8)
+    assert "in order: 0, 1, 2, 3, 4, 5, 6, 7." in s8
+    assert "in order: 0, 2, 4, 6, 8." in segment_instructions(9)
+    assert "in order: 0, 2, 4, 6, 8, 10, 12, 14. No other lines, none at or after 15 seconds." in segment_instructions(15)
+    assert "end pose" not in s8 and "previous clip" not in s8
+    assert "end pose" in segment_instructions(5, has_end=True)
+    assert "previous clip" in segment_instructions(5, has_prev=True)
+    assert "at most 25 words" in s8 and "no zoom" in s8 and VEED_RULES in s8
+    assert "static on the first line and on the last line" in s8
+    assert VEED_RULES in detail_instructions(5) and "at most 25 words" in detail_instructions(5)
+    assert "Write in English" in VEED_RULES
+
+
+def test_segment_request():
+    assert segment_request("A man.", "he waves", 5, "sitting on the edge", "(at 3 seconds: a)\n(at 4 seconds: b)\n") == (
+        "Character and setting: A man.\nGoal: he waves\nThe clip lasts 5 seconds.\n"
+        "It must end exactly in this pose: sitting on the edge\nThe previous clip ended with: (at 4 seconds: b)"
+    )
+    assert segment_request("", "", 3) == "Goal: Continue the scene naturally\nThe clip lasts 3 seconds.\nThe clip ends freely."
+    assert segment_request(" a  b ", " c\nd ", 2, previous="") == "Character and setting: a b\nGoal: c d\nThe clip lasts 2 seconds.\nThe clip ends freely."
+
+
+def test_has_timed_lines():
+    assert has_timed_lines("(at 0 seconds: x)\n(at 2 seconds: y)")
+    assert has_timed_lines("note\n(At 0 seconds: x)")
+    assert not has_timed_lines("* Max 25 words? Yes.\n* English? Yes.")
+    assert not has_timed_lines("")
+
+
+def test_trim_timed_lines():
+    text = "(at 0 seconds: a)\n\nnote\n(at 1 seconds: b)\n(at 2 seconds: c)\n(at 10 seconds: d)"
+    assert trim_timed_lines(text, 2) == "(at 0 seconds: a)\nnote\n(at 1 seconds: b)"
+    assert trim_timed_lines(text, 10) == "(at 0 seconds: a)\nnote\n(at 1 seconds: b)\n(at 2 seconds: c)"
+    assert trim_timed_lines("(at 2 seconds: c)", 2) == ""
+
+
+def test_strip_think():
+    assert strip_think("<think>\nplan\n</think>\n(at 0 seconds: x)\n") == "(at 0 seconds: x)"
+    assert strip_think("(at 0 seconds: x)") == "(at 0 seconds: x)"
+    assert strip_think("") == ""
+
+
+def test_estimate_long_window():
+    assert estimate_seconds(REELS_MODEL, [161], "720x720") > estimate_seconds(REELS_MODEL, [81, 81], "720x720")
+    assert estimate_seconds(REELS_MODEL, [81], "720x720") == 120 + 4 * 97
 
 
 def test_aspect_mismatch():
@@ -271,12 +333,23 @@ def test_detail_lora():
 
 def test_parse_story():
     text = (
-        "\ufeffA %x% .png :0–3s:\nAnimate the photo.\nHe smiles.\n\n"
-        "b.png: 3-7s:\nHe waves.\n\n"
-        "c.jpg : 2s :\nHe sits.\n"
+        "\ufeff(VI) Mô tả chung.\n(EN) Common description.\n\n"
+        "A %x% .png :0–10s:\n- (VI) Anh cười.\n- (EN) He smiles.\nHe waves.\n\n"
+        "b.png: 10-15s:\n(EN) (at 0 seconds: he sits)\n(at 1 seconds: down)\n\n"
+        "c.jpg : 2s :\n• (vi) Anh ngồi.\n"
     )
-    assert parse_story(text) == [("A %x% .png", 3, "Animate the photo. He smiles"), ("b.png", 4, "He waves"), ("c.jpg", 2, "He sits")]
-    for bad in ("a.png :0–6s:\nx", "a.png :3–3s:\nx", "no header here\nx"):
+    assert parse_story(text) == ("Common description.", [
+        ("A %x% .png", 10, "He smiles.\nHe waves."),
+        ("b.png", 5, "(at 0 seconds: he sits)\n(at 1 seconds: down)"),
+        ("c.jpg", 2, ""),
+    ])
+    assert parse_story(text, "vi") == ("Mô tả chung.", [
+        ("A %x% .png", 10, "Anh cười.\nHe waves."),
+        ("b.png", 5, "(at 1 seconds: down)"),
+        ("c.jpg", 2, "Anh ngồi."),
+    ])
+    assert parse_story("a.png : 3s :\nx\ny") == ("", [("a.png", 3, "x\ny")])
+    for bad in ("a.png :0–16s:\nx", "a.png :3–3s:\nx", "a.png 0-3s\nx", "a.png : 2s :\nx\n\nno header here\ny"):
         try:
             parse_story(bad)
         except ValueError:
@@ -300,17 +373,18 @@ def test_detail_instructions_no_zoom():
     assert "no zoom" in detail_instructions(10)
 
 
-def test_log_harness():
+def test_log_block():
     import tempfile
     from pathlib import Path
 
     with tempfile.TemporaryDirectory() as d:
         p = Path(d) / "logs" / "h.log"
-        log_harness({"command": "--check-reel a.png 10", "got": "10.06s", "ok": True}, p)
-        log_harness({"command": "--check-multi x", "ok": False}, p)
+        log_block({"command": "generate", "prompt": "a\nb", "ok": True}, p)
+        log_block({"command": "--check-multi x", "ok": False}, p)
         text = p.read_text(encoding="utf-8")
         assert text.count("=== ") == 2
-        assert "--check-reel a.png 10\ngot: 10.06s\nok: True\n" in text
+        assert " generate\nprompt: a\n  b\nok: True\n\n" in text
+        assert "--check-multi x\nok: False\n" in text
 
 
 def test_calib_roundtrip():

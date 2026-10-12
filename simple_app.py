@@ -202,20 +202,27 @@ def extend_settings(defaults, *, video, anchor, prompt, resolution, seconds, see
 MAX_IMAGES = 6
 
 
-def _one_line(*parts):
-    """Join non-empty parts with '. ' on a single line (PW windows must not contain blank lines)."""
-    cleaned = [" ".join(str(p).split()).rstrip(".") for p in parts if p and str(p).strip()]
-    return ". ".join(c for c in cleaned if c)
+def _lines(text):
+    """Non-empty stripped lines of `text` (PW windows must not contain blank lines)."""
+    return [line.strip() for line in str(text or "").splitlines() if line.strip()]
+
+
+def multi_prompt(common, prompts, durations):
+    """One `[/duration=Ns]` paragraph per segment: the common description first, then the segment's lines verbatim."""
+    paragraphs = []
+    for d, p in zip(durations, prompts):
+        body = [" ".join(str(common or "").split())] + _lines(p)
+        paragraphs.append(" ".join([f"[/duration={int(d)}s]", "\n".join(b for b in body if b)]).rstrip())
+    return "\n\n".join(paragraphs)
 
 
 def multi_settings(defaults, *, images, durations, prompts, common, resolution, seed, loras=(), high=1.0, low=0.0, smooth=True, detail=False):
     """One Lightning job through every image: window i starts at image i, lasts durations[i]
     and ends on image i+1; the last window has no end image."""
-    paragraphs = [f"[/duration={int(d)}s] {_one_line(common, p)}" for d, p in zip(durations, prompts)]
     return {
         **defaults,
         "model_type": REELS_MODEL,
-        "prompt": "\n\n".join(paragraphs),
+        "prompt": multi_prompt(common, prompts, durations),
         "multi_prompts_gen_type": "PW",
         "image_prompt_type": "SE" if len(images) > 1 else "S",
         "image_start": images[0],
@@ -242,19 +249,43 @@ _STORY_HEAD = re.compile(
 )
 
 
-def parse_story(text):
-    """[(image name, whole seconds, prompt on one line)] from a Story file, in file order."""
-    story = []
-    for block in re.split(r"\n\s*\n", str(text).lstrip("﻿").strip()):
+_LANG = re.compile(r"^\((vi|en)\)\s*", re.I)
+_BULLET = re.compile(r"^\s*(?:[-*•]|\d+[.):])\s*")
+_IMAGE_EXT = re.compile(r"\.(?:png|jpe?g|webp)\b", re.I)
+
+
+def _story_lines(lines, lang):
+    """Lines of a Story block for `lang`: bullets dropped, `(VI)`/`(EN)` prefixes filtered, unprefixed lines kept."""
+    out = []
+    for line in lines:
+        line = _BULLET.sub("", line).strip()
+        m = _LANG.match(line)
+        if m:
+            if m[1].lower() != lang:
+                continue
+            line = line[m.end():].strip()
+        if line:
+            out.append(line)
+    return out
+
+
+def parse_story(text, lang="en"):
+    """(common description, [(image name, whole seconds, prompt lines)]) from a Story file, in file order.
+    A first block without an image heading is the common description."""
+    common, story = "", []
+    for i, block in enumerate(re.split(r"\n\s*\n", str(text).lstrip("﻿").strip())):
         head, *body = block.strip().splitlines()
         m = _STORY_HEAD.match(head.strip())
         if not m:
+            if i == 0 and not _IMAGE_EXT.search(head):
+                common = " ".join(_story_lines(block.splitlines(), lang))
+                continue
             raise ValueError(f"Story: không đọc được dòng đầu khối: {head!r}")
         seconds = float(m["end"]) - float(m["start"] or 0)
-        if seconds != int(seconds) or not 1 <= seconds <= 5:
-            raise ValueError(f"Story: {m['name'].strip()}: thời lượng {seconds:g}s phải là số giây nguyên từ 1 đến 5")
-        story.append((m["name"].strip(), int(seconds), _one_line(" ".join(body))))
-    return story
+        if seconds != int(seconds) or not 1 <= seconds <= 15:
+            raise ValueError(f"Story: {m['name'].strip()}: thời lượng {seconds:g}s phải là số giây nguyên từ 1 đến 15")
+        story.append((m["name"].strip(), int(seconds), "\n".join(_story_lines(body, lang))))
+    return common, story
 
 
 # (steps, seconds per step, reference frames, reference pixels), measured 2026-09-30 on the RTX 5070 Ti Laptop 12 GB
@@ -268,17 +299,18 @@ LOAD_SECONDS = 120  # model load + VAE decode
 MODEL_LABELS = {REELS_MODEL: "Lightning v2", EXTEND_MODEL: "SVI 2 Pro", MOTION_MODEL: "Animate 2", ANIMATE_MODEL: "Animate 14B"}
 TIMINGS = ROOT / "simple_app_timings.json"
 HARNESS_LOG = ROOT / "logs" / "simple_app_harness.log"
+APP_LOG = ROOT / "logs" / "simple_app.log"
 
 
-def log_harness(entry, path=HARNESS_LOG):
-    """Append one block to the harness log: a '=== time command' line, then 'key: value' lines."""
+def log_block(entry, path=APP_LOG):
+    """Append one block: a '=== time command' line, then 'key: value' lines; later lines of a value are indented."""
     import time
 
     entry = dict(entry)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [f"=== {time.strftime('%Y-%m-%d %H:%M:%S')} {entry.pop('command', '')}"]
-    lines += [f"{k}: {v}" for k, v in entry.items()]
+    lines += [f"{k}: " + str(v).replace("\n", "\n  ") for k, v in entry.items()]
     with path.open("a", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n\n")
 
@@ -287,8 +319,8 @@ def estimate_seconds(model, windows, resolution, calib=None):
     """Expected wall time of a job; `windows` lists the frame count of each sliding window."""
     steps, per_step, ref_frames, ref_pixels = SPEED[model]
     w, h = (int(v) for v in resolution.split("x"))
-    # ponytail: linear in frames x pixels (attention grows faster); the calibration ratio absorbs the error for usual sizes
-    work = sum(windows) * w * h / (ref_frames * ref_pixels)
+    # ponytail: f^1.5 sits between linear layers and quadratic attention; the calibration ratio absorbs the rest
+    work = sum(f * (f / ref_frames) ** 0.5 for f in windows) * w * h / (ref_frames * ref_pixels)
     return (LOAD_SECONDS + steps * per_step * work) * (calib or {}).get(model, 1.0)
 
 
@@ -373,25 +405,78 @@ def ideas_instructions(seconds=5):
     )
 
 
+VEED_RULES = (
+    "Each line describes exactly one main movement of the person and one concrete camera move (static, pan, tilt, dolly, slow push): "
+    "say how things move, do not re-describe the image.\n"
+    "Build the motion progressively: start subtle and grow through the clip.\n"
+    "Write in English even if the goal is written in another language.\n"
+)
+
+_SHOT_RULES = (
+    "Describe ONE continuous shot that starts exactly from the image: no cuts, no scene change, no change of location, lighting, weather or time of day.\n"
+    "The person must stay the same person for the whole video: same face, hairstyle, hair color, body, skin tone, outfit and accessories as in the image, "
+    "unless the goal says they put on, take off or pick up something. Never describe a different look.\n"
+    "Keep the motion natural and modest so the face stays recognizable. The camera is static or moves slowly.\n"
+    "The camera keeps the same distance and framing as the image: no zoom, no push-in, no close-up on the face; the person may walk closer by themselves.\n"
+)
+
+_LINE_RULES = (
+    "Each line must begin with \"(at X seconds:\" where X is that second number, followed by a dense, comma-separated visual description "
+    "of at most 25 words, all inside a single set of parentheses.\n"
+    "Do not include commentary, explanations, or meta-text."
+)
+
+
 # The model's own enhancer instructions ask for shot changes every second, which turns the person
 # into someone else. These keep one continuous shot and restate the subject on every line.
 def detail_instructions(seconds=5):
     return (
         "You are an AI vision model writing a prompt for an image-to-video model. Analyze the provided image and the user's goal.\n"
-        "Describe ONE continuous shot that starts exactly from the image: no cuts, no scene change, no change of location, lighting, weather or time of day.\n"
-        "The person must stay the same person for the whole video: same face, hairstyle, hair color, body, skin tone, outfit and accessories as in the image. Never describe a different look.\n"
-        "Keep the motion natural and modest so the face stays recognizable. The camera is static or moves slowly.\n"
-        "The camera keeps the same distance and framing as the image: no zoom, no push-in, no close-up on the face; the person may walk closer by themselves.\n"
+        + _SHOT_RULES + VEED_RULES +
         "Output rules:\n"
         f"Write one line per second, from 0 to {seconds - 1} seconds.\n"
-        "Each line must begin with \"(at X seconds:\" where X is the second number, followed by a dense, comma-separated visual description, all inside a single set of parentheses.\n"
         "Every line repeats the same subject and setting description taken from the image and changes only the action and the camera movement.\n"
-        "Do not include commentary, explanations, or meta-text."
+        + _LINE_RULES
     )
 
 
-def enhance(session, model_type, text, image, instructions=None, progress=None):
-    """Run Wan2GP's local prompt enhancer on (text, image) and return the generated text."""
+def segment_instructions(seconds, has_end=False, has_prev=False):
+    """Per-second (or per-2-second above 8 s, for the 512-token window limit) lines for one Multi Image segment."""
+    step = 1 if seconds <= 8 else 2
+    marks = ", ".join(str(t) for t in range(0, int(seconds), step))
+    text = (
+        "You are an AI vision model writing a prompt for an image-to-video model. The image is the first frame of a clip; analyze it and the user's goal.\n"
+        + _SHOT_RULES + VEED_RULES +
+        "The camera is static on the first line and on the last line.\n"
+    )
+    if has_prev:
+        text += "The first line repeats the exact pose and action the previous clip ended with, so the join is seamless; the new action starts on the second line.\n"
+    if has_end:
+        text += "The last line brings the person exactly into the end pose given by the user; pace the earlier lines so this pose is reachable in time.\n"
+    return text + "Output rules:\n" + f"Write exactly one line for each of these seconds, in order: {marks}. No other lines, none at or after {int(seconds)} seconds.\n" + _LINE_RULES
+
+
+def segment_request(common, hint, seconds, caption=None, previous=None):
+    """The user message for `segment_instructions`: setting, goal, length, end pose and the previous segment's last line."""
+    parts = []
+    if (common or "").strip():
+        parts.append(f"Character and setting: {' '.join(common.split())}")
+    parts.append(f"Goal: {' '.join(hint.split()) if (hint or '').strip() else 'Continue the scene naturally'}")
+    parts.append(f"The clip lasts {int(seconds)} seconds.")
+    parts.append(f"It must end exactly in this pose: {caption.strip()}" if caption else "The clip ends freely.")
+    last = _lines(previous)
+    if last:
+        parts.append(f"The previous clip ended with: {last[-1]}")
+    return "\n".join(parts)
+
+
+def strip_think(text):
+    """Drop a leaked Qwen `<think>…</think>` block."""
+    return re.sub(r"<think>.*?</think>\s*", "", str(text or ""), flags=re.S).strip()
+
+
+def enhance(session, model_type, text, image, instructions=None, progress=None, think=False, purpose="", tab=""):
+    """Run Wan2GP's local prompt enhancer on (text, image) and return the generated text; every call is logged."""
     wgp = sys.modules["wgp"]
     from shared.utils.model_unload import wait_for_model_unload
     from shared.utils.process_locks import acquire_GPU_ressources, release_GPU_ressources
@@ -399,20 +484,62 @@ def enhance(session, model_type, text, image, instructions=None, progress=None):
     # ponytail: session._state is private to WanGPSession; switch to the plugin-provided state if the API changes
     state = session._state
     model_def = wgp.get_model_def(model_type) if model_type else None
+    mode = wgp.build_prompt_enhancer_value("TI", think)  # "TIK" = text + image + Qwen thinking
     wait_for_model_unload()
     acquire_GPU_ressources(state, "prompt_enhancer", "Prompt Enhancer")
     try:
         wgp.ensure_prompt_enhancer_loaded(progress=progress)
         out = wgp.process_prompt_enhancer(
-            model_type, model_def, "TI", [text], image, None, False, False, -1,
+            model_type, model_def, mode, [text], image, None, False, False, -1,
             prompt_enhancer_instructions=instructions,
         )
+    except Exception as e:
+        log_block({"command": "error", "tab": tab, "purpose": purpose, "prompt": text, "error": repr(e)})
+        raise
     finally:
         wgp.unload_prompt_enhancer_runtime()
         if wgp.enhancer_offloadobj is not None:
             wgp.enhancer_offloadobj.unload_all()
         release_GPU_ressources(state, "prompt_enhancer")
-    return str(out[0]) if out else ""
+    result = strip_think(out[0]) if out else ""
+    log_block({"command": "enhance", "tab": tab, "purpose": purpose, "image": image, "think": think, "input": text, "output": result})
+    return result
+
+
+POSE_INSTRUCTIONS = (
+    "You are an AI vision model. Describe the provided image in ONE English sentence: the person's pose, where they are in the frame, "
+    "what they wear or hold, and the camera framing (distance and angle). No commentary, no list, no meta-text."
+)
+
+
+_AT = re.compile(r"^\(at\s+(\d+(?:\.\d+)?)\s*seconds?\s*:", re.I)
+
+
+def has_timed_lines(text):
+    """True when `text` holds at least one `(at N seconds:` line (what the video model expects)."""
+    return any(_AT.match(line) for line in _lines(text))
+
+
+def trim_timed_lines(text, seconds):
+    """Drop `(at N seconds:` lines at or past the clip end; the enhancer likes to add one for the final pose."""
+    kept = [line for line in _lines(text) if not (m := _AT.match(line)) or float(m[1]) < seconds]
+    return "\n".join(kept)
+
+
+def write_segment(session, image, end_image, seconds, common, hint, previous=None, progress=None, tab="multi", index=0):
+    """Timed lines for one Multi Image segment: the start image, the end image's pose (captioned first),
+    the common description, the user's hint and the previous segment's last line."""
+    caption = None
+    if end_image:
+        caption = enhance(session, "", "Describe this image.", end_image, POSE_INSTRUCTIONS, progress, purpose=f"caption {index + 1}", tab=tab)
+    request = segment_request(common, hint, seconds, caption, previous)
+    instructions = segment_instructions(int(seconds), bool(end_image), bool(_lines(previous)))
+    # Think is off: with the 512-token budget Qwen3.5 spends it on reasoning and the timed lines get cut (2026-10-10, segment 3)
+    for attempt in range(2):
+        out = trim_timed_lines(enhance(session, "", request, image, instructions, progress, purpose=f"segment {index + 1}", tab=tab), seconds)
+        if has_timed_lines(out):
+            return out
+    raise RuntimeError(f"Đoạn {index + 1}: enhancer không trả về dòng (at N seconds:) sau 2 lần; xem logs/simple_app.log")
 
 
 def _image_size(path):
@@ -496,6 +623,7 @@ CSS = f"""
 .note {{ color: {COLORS['warn']}; font-size: 14px; }}
 #guide {{ display: none; position: fixed; inset: 5vh 10vw; z-index: 1000; background: {COLORS['surface']};
           border: 1px solid {COLORS['border_strong']}; border-radius: 8px; padding: 24px; overflow: auto; }}
+.mono textarea {{ font-family: 'JetBrains Mono', monospace; font-size: 12px; }}
 """
 
 
@@ -526,7 +654,12 @@ GUIDE = """
 - **Giữ da & tóc**: thêm LoRA chi tiết *Detailz* ở Pha cuối (cường độ 0.6) để da và tóc không bị bệt hay biến dạng. Ảnh cận mặt: bật *Giữ da & tóc*, nên chọn 720p. "Viết chi tiết" giữ máy quay ở khoảng cách cũ, không zoom sát mặt.
 
 ### Reels Multi Image: tối đa 6 ảnh của cùng một nhân vật
-Mỗi ảnh là một mốc. Đoạn của ảnh *i* bắt đầu ở ảnh *i*, dài đúng số giây ghi trên ảnh đó và kết thúc ở ảnh *i+1*. Đoạn của ảnh cuối chạy tự do. Mô tả nhân vật chung được ghép vào đầu prompt của mọi đoạn. Độ phân giải theo ảnh 1.
+Mỗi ảnh là một mốc. Đoạn của ảnh *i* bắt đầu ở ảnh *i*, dài 1–15 giây theo slider và kết thúc ở ảnh *i+1*; đoạn của ảnh cuối chạy tự do. Trên 8 giây có cảnh báo: model huấn luyện ở 5 giây, đoạn dài hay lặp động tác và tốn thời gian hơn nhiều. Độ phân giải theo ảnh 1.
+- **Prompt theo giây**: mỗi dòng `(at N seconds: …)` là định dạng model hiểu; mốc kiểu `(2s-4s)` trong một đoạn không có tác dụng. Mô tả nhân vật chung được ghép vào đầu mọi đoạn.
+- **Viết chi tiết**: enhancer đọc ảnh đầu, tư thế ảnh cuối, ý ngắn bạn gõ và dòng cuối của đoạn trước, rồi viết các dòng theo giây. *Viết chi tiết tất cả* đi lần lượt từ đoạn 1. Mỗi lần gọi mất khoảng một phút.
+- **Mối nối**: hai đoạn kề nhau chỉ chung 1 frame, nên giây cuối đoạn trước và giây đầu đoạn sau nên tả cùng một động tác, máy quay đứng yên ở ranh giới, không mở đầu đoạn bằng hiệu ứng mới.
+- **Ngôn ngữ**: viết prompt tiếng Anh; ý ngắn tiếng Việt thì Viết chi tiết sẽ dịch. Prompt tiếng Việt gửi thẳng chạy được nhưng bám yếu hơn.
+- **Prompt đã gửi**: sau khi tạo xong, ô này hiện đúng chuỗi đã gửi cho Wan2GP; `logs/simple_app.log` ghi lại mọi prompt và mọi lần gọi enhancer.
 
 ### Motion Control
 Nhân vật trong ảnh làm theo chuyển động của video mẫu. Video ra dài **đúng bằng video mẫu**, trừ khi tick *Giới hạn thời lượng*. Video mẫu được đưa về 16 fps để chạy nhanh gấp đôi; bật *Mượt x2* để ra 32 fps.
@@ -603,21 +736,29 @@ def build_ui(session):
             return None
         raise gr.Error(str(result.errors[0]) if result.errors else "Wan2GP không trả về file nào.")
 
-    def generate(settings, windows, progress):
-        """Run a generation job and record actual / estimated time for its model. Returns (video, took_text)."""
+    def generate(settings, windows, progress, tab):
+        """Run a generation job, log it and record actual / estimated time for its model. Returns (video, took_text, prompt)."""
         model = settings["model_type"]
         start = time.monotonic()
-        video = run(lambda cb: session.submit_task(settings, callbacks=cb), progress)
+        try:
+            video = run(lambda cb: session.submit_task(settings, callbacks=cb), progress)
+        except Exception as e:
+            log_block({"command": "error", "tab": tab, "prompt": settings["prompt"], "error": str(e)})
+            raise
         if video is None:
-            return None, ""
+            return None, "", settings["prompt"]
         took = time.monotonic() - start
-        save_calib(model, took, estimate_seconds(model, windows, settings["resolution"]))
+        calib = save_calib(model, took, estimate_seconds(model, windows, settings["resolution"]))
+        log_block({
+            "command": "generate", "tab": tab, "model": model, "resolution": settings["resolution"], "seed": settings["seed"],
+            "windows": len(windows), "prompt": settings["prompt"], "video": video, "took": fmt_minutes(took), "calib": calib[model],
+        })
         text = f"Thực tế {fmt_minutes(took)}"
         removed = len(windows) - 1  # keep_intermediate_sliding_windows = 0: each window replaced the previous file
         if removed > 0:
             gr.Info(f"Đã xóa {removed} video trung gian, chỉ giữ video cuối.")
             text += f" · đã xóa {removed} video trung gian"
-        return video, text
+        return video, text, settings["prompt"]
 
     def cancel():
         job = active["job"]
@@ -637,7 +778,7 @@ def build_ui(session):
         return gr.update(choices=lora_names())
 
     def results(extend=False):
-        """Right column of a tab: actions, estimate, video, timing, follow-up buttons."""
+        """Right column of a tab: actions, estimate, video, timing, follow-up buttons, the prompt sent."""
         with gr.Row():
             cancel_btn = gr.Button("Hủy", variant="secondary")
             go = gr.Button("Tạo Video", variant="primary")
@@ -647,9 +788,10 @@ def build_ui(session):
         with gr.Row():
             ext = gr.Button("Kéo dài video (neo ảnh gốc)", variant="secondary", interactive=False) if extend else None
             up = gr.Button("Upscale ×2", variant="secondary", interactive=False)
+        sent = gr.Textbox(label="Prompt đã gửi", lines=8, interactive=False, elem_classes="mono")
         cancel_btn.click(cancel, queue=False)
         up.click(upscale, video, video)
-        return go, eta, video, took, ext, up
+        return go, eta, video, took, sent, ext, up
 
     def image_resolution(image, quality):
         return pick_resolution(*_image_size(image), quality) if image else RESOLUTIONS[quality][0]
@@ -674,11 +816,11 @@ def build_ui(session):
             image=image, prompt=prompt, resolution=image_resolution(image, quality),
             seconds=seconds, seed=seed, loras=loras, high=high, low=low, smooth=smooth, detail=detail,
         )
-        video, took = generate(settings, windows, progress)
+        video, took, sent = generate(settings, windows, progress, "reels")
         if video is None:
-            return gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+            return (gr.update(),) * 6
         last = {"video": video, "image": image, "resolution": settings["resolution"]}
-        return video, last, gr.update(interactive=True), gr.update(interactive=True), took
+        return video, last, gr.update(interactive=True), gr.update(interactive=True), took, sent
 
     def extend_reel(last, prompt, seconds, smooth, loras, high, low, detail, seed, progress=gr.Progress()):
         if not last:
@@ -690,10 +832,10 @@ def build_ui(session):
             video=last["video"], anchor=last["image"], prompt=prompt, resolution=last["resolution"],
             seconds=min(seconds, 5), seed=seed, loras=loras, high=high, low=low, smooth=smooth, detail=detail,
         )
-        video, took = generate(settings, [settings["video_length"]], progress)
+        video, took, sent = generate(settings, [settings["video_length"]], progress, "extend")
         if video is None:
-            return gr.update(), gr.update(), gr.update()
-        return video, {**last, "video": video}, took
+            return (gr.update(),) * 4
+        return video, {**last, "video": video}, took, sent
 
     def suggest_ideas(image, hint, seconds, progress=gr.Progress()):
         if not image:
@@ -701,7 +843,7 @@ def build_ui(session):
         if active["job"] is not None:
             raise gr.Error("Đang tạo video, chờ xong rồi gợi ý.")
         text = (hint or "").strip() or "Suggest short video ideas for this image."
-        ideas = parse_ideas(enhance(session, "", text, image, ideas_instructions(int(seconds)), progress))
+        ideas = parse_ideas(enhance(session, "", text, image, ideas_instructions(int(seconds)), progress, purpose="ideas", tab="reels"))
         if not ideas:
             raise gr.Error("Không nhận được ý tưởng nào, thử lại.")
         return gr.update(choices=ideas, value=None)
@@ -713,9 +855,14 @@ def build_ui(session):
             raise gr.Error("Nhập ý ngắn hoặc chọn một ý tưởng trước.")
         if active["job"] is not None:
             raise gr.Error("Đang tạo video, chờ xong rồi gợi ý.")
-        return enhance(session, "", hint.strip(), image, detail_instructions(int(seconds)), progress)
+        return enhance(session, "", hint.strip(), image, detail_instructions(int(seconds)), progress, purpose="detail", tab="reels")
 
     # ---------- Reels Multi Image ----------
+    def card_status(n, i, seconds):
+        if seconds > 8:
+            return gr.update(value="Lưu ý: hơn 8 s, có thể lặp động tác và thời gian tăng nhanh", elem_classes="note")
+        return gr.update(value="Đoạn cuối, chạy tự do" if i == n - 1 else f"Kết thúc ở ảnh {i + 2}", elem_classes="eta")
+
     def multi_status(n, quality, *vals):
         images, durations = vals[:n], vals[MAX_IMAGES:MAX_IMAGES + n]
         count = f"**{n}/{MAX_IMAGES} ảnh · tổng {sum(durations):g} giây**"
@@ -723,7 +870,33 @@ def build_ui(session):
         off = aspect_mismatch([_image_size(im) if im else None for im in images])
         if off:
             eta += f"\n\nLưu ý: ảnh {', '.join(map(str, off))} lệch tỉ lệ khung với ảnh 1 hơn 10%: Wan2GP sẽ co và cắt."
-        return count, eta
+        statuses = [card_status(n, i, durations[i]) if i < n else gr.update(value="") for i in range(MAX_IMAGES)]
+        return [count, eta, *statuses]
+
+    # progress must come before *vals: Gradio only injects gr.Progress into positional parameters
+    def write_card(index):
+        def write(n, common, progress=gr.Progress(), *vals):
+            images, durations, prompts = vals[:MAX_IMAGES], vals[MAX_IMAGES:2 * MAX_IMAGES], vals[2 * MAX_IMAGES:]
+            if index >= n or not images[index]:
+                raise gr.Error(f"Ảnh {index + 1} chưa có.")
+            if active["job"] is not None:
+                raise gr.Error("Đang tạo video, chờ xong rồi viết.")
+            end = images[index + 1] if index + 1 < n else None
+            return write_segment(session, images[index], end, int(durations[index]), common, prompts[index],
+                                 prompts[index - 1] if index else None, progress, index=index)
+
+        return write
+
+    def write_all(n, common, progress=gr.Progress(), *vals):
+        images, durations, prompts = list(vals[:MAX_IMAGES]), vals[MAX_IMAGES:2 * MAX_IMAGES], list(vals[2 * MAX_IMAGES:])
+        if not all(images[:n]):
+            raise gr.Error("Ô ảnh nào đang hiện cũng phải có ảnh.")
+        if active["job"] is not None:
+            raise gr.Error("Đang tạo video, chờ xong rồi viết.")
+        for i in range(n):
+            end = images[i + 1] if i + 1 < n else None
+            prompts[i] = write_segment(session, images[i], end, int(durations[i]), common, prompts[i], prompts[i - 1] if i else None, progress, index=i)
+        return prompts
 
     def multi_add(n):
         n = min(MAX_IMAGES, n + 1)
@@ -754,10 +927,10 @@ def build_ui(session):
             images=images, durations=durations, prompts=prompts, common=common,
             resolution=image_resolution(images[0], quality), seed=seed, loras=loras, high=high, low=low, smooth=smooth, detail=detail,
         )
-        video, took = generate(settings, [d * FPS + 1 for d in durations], progress)
+        video, took, sent = generate(settings, [d * FPS + 1 for d in durations], progress, "multi")
         if video is None:
-            return gr.update(), gr.update(), gr.update()
-        return video, gr.update(interactive=True), took
+            return (gr.update(),) * 4
+        return video, gr.update(interactive=True), took, sent
 
     # ---------- Motion Control ----------
     def motion_info(video):
@@ -795,10 +968,10 @@ def build_ui(session):
             resolution=image_resolution(image, quality), frames=frames, seed=seed, model=model, smooth=smooth,
             audio=audio, outfit=outfit,
         )
-        out, took = generate(settings, sliding_windows(frames, *MOTION_WINDOWS[model]), progress)
+        out, took, sent = generate(settings, sliding_windows(frames, *MOTION_WINDOWS[model]), progress, "motion")
         if out is None:
-            return gr.update(), gr.update(), gr.update()
-        return out, gr.update(interactive=True), took
+            return (gr.update(),) * 4
+        return out, gr.update(interactive=True), took, sent
 
     with gr.Blocks(title="Simple App", theme=make_theme(), css=CSS, js=FORCE_DARK) as demo:
         r_last = gr.State(None)
@@ -821,7 +994,7 @@ def build_ui(session):
                         r_detail_btn = gr.Button("Viết chi tiết", variant="secondary", scale=0)
                     r_prompt = gr.Textbox(label="Prompt", lines=8)
                 with gr.Column(scale=1):
-                    r_go, r_eta, r_video, r_took, r_extend, r_up = results(extend=True)
+                    r_go, r_eta, r_video, r_took, r_sent, r_extend, r_up = results(extend=True)
                     with gr.Accordion("Cài đặt nâng cao", open=True):
                         r_seconds = gr.Slider(2, 15, value=5, step=1, label="Thời lượng video (giây)")
                         r_quality = gr.Radio(["480p", "720p"], value="480p", label="Độ phân giải")
@@ -835,23 +1008,28 @@ def build_ui(session):
 
         with gr.Tab("Reels Multi Image"):
             mm_n = gr.State(2)
-            mm_images, mm_durations, mm_prompts, mm_cards, mm_removes = [], [], [], [], []
+            mm_images, mm_durations, mm_status, mm_prompts, mm_cards, mm_writes, mm_removes = [], [], [], [], [], [], []
             with gr.Row():
                 with gr.Column(scale=2):
                     mm_count = gr.Markdown()
                     mm_common = gr.Textbox(
-                        label="Mô tả nhân vật chung (ghép vào đầu mọi prompt)",
+                        label="Mô tả nhân vật chung (ghép vào đầu mọi đoạn)",
                         placeholder="a young man with short black hair, white t-shirt, in a sunny park",
                     )
                     with gr.Row():
                         for i in range(MAX_IMAGES):
                             with gr.Column(visible=i < 2, min_width=220) as card:
                                 mm_images.append(gr.Image(type="filepath", label=f"Ảnh {i + 1}", sources=["upload", "clipboard"], height=220))
-                                mm_durations.append(gr.Slider(1, 5, value=3, step=1, label="Thời lượng đoạn (giây)"))
-                                mm_prompts.append(gr.Textbox(label=f"Prompt {i + 1}", lines=3, placeholder="hành động trong đoạn này"))
-                                mm_removes.append(gr.Button("Xóa", variant="secondary", size="sm"))
+                                mm_durations.append(gr.Slider(1, 15, value=3, step=1, label="Thời lượng đoạn (giây)"))
+                                mm_status.append(gr.Markdown(elem_classes="eta"))
+                                mm_prompts.append(gr.Textbox(label=f"Prompt {i + 1}", lines=5, placeholder="ý ngắn, hoặc các dòng (at N seconds: …)"))
+                                with gr.Row():
+                                    mm_writes.append(gr.Button("Viết chi tiết", variant="secondary", size="sm"))
+                                    mm_removes.append(gr.Button("Xóa", variant="secondary", size="sm"))
                             mm_cards.append(card)
-                    mm_add = gr.Button("Thêm ảnh", variant="secondary")
+                    with gr.Row():
+                        mm_add = gr.Button("Thêm ảnh", variant="secondary")
+                        mm_write_all = gr.Button("Viết chi tiết tất cả", variant="secondary")
                     with gr.Accordion("Cài đặt nâng cao", open=False):
                         mm_quality = gr.Radio(["480p", "720p"], value="480p", label="Độ phân giải (theo ảnh 1)")
                         mm_smooth = gr.Checkbox(value=True, label="Mượt x2 (32 fps)")
@@ -862,7 +1040,7 @@ def build_ui(session):
                         mm_detail = gr.Checkbox(False, label="Giữ da & tóc (LoRA chi tiết)")
                         mm_seed = gr.Number(value=-1, precision=0, label="Seed (-1 = ngẫu nhiên)")
                 with gr.Column(scale=1):
-                    mm_go, mm_eta, mm_video, mm_took, _, mm_up = results()
+                    mm_go, mm_eta, mm_video, mm_took, mm_sent, _, mm_up = results()
 
         with gr.Tab("Motion Control"):
             with gr.Row():
@@ -889,7 +1067,7 @@ def build_ui(session):
                     if not session.get_model_availability(MOTION_MODEL)["available"]:
                         gr.Markdown("Lần đầu dùng Animate 2 sẽ tải model (17 GB).")
                 with gr.Column(scale=1):
-                    m_go, m_eta, m_out, m_took, _, m_up = results()
+                    m_go, m_eta, m_out, m_took, m_sent, _, m_up = results()
 
         # purely visual toggle: run it in the browser, no server round trip
         guide_btn.click(None, js="() => { document.getElementById('guide').style.display = 'flex'; }")
@@ -906,27 +1084,31 @@ def build_ui(session):
         r_go.click(
             make_reel,
             [r_image, r_prompt, r_seconds, r_quality, r_smooth, r_loras, r_high, r_low, r_detail, r_seed],
-            [r_video, r_last, r_extend, r_up, r_took],
+            [r_video, r_last, r_extend, r_up, r_took, r_sent],
         )
         r_extend.click(
             extend_reel,
             [r_last, r_prompt, r_seconds, r_smooth, r_loras, r_high, r_low, r_detail, r_seed],
-            [r_video, r_last, r_took],
+            [r_video, r_last, r_took, r_sent],
         )
 
         slots = [*mm_images, *mm_durations, *mm_prompts]
         status_in = [mm_n, mm_quality, *mm_images, *mm_durations]
+        status_out = [mm_count, mm_eta, *mm_status]
         for comp in (*mm_images, *mm_durations, mm_quality):
-            comp.change(multi_status, status_in, [mm_count, mm_eta])
-        demo.load(multi_status, status_in, [mm_count, mm_eta])
-        mm_add.click(multi_add, mm_n, [mm_n, *mm_cards]).then(multi_status, status_in, [mm_count, mm_eta])
+            comp.change(multi_status, status_in, status_out)
+        demo.load(multi_status, status_in, status_out)
+        mm_add.click(multi_add, mm_n, [mm_n, *mm_cards]).then(multi_status, status_in, status_out)
         for i, rm in enumerate(mm_removes):
-            rm.click(multi_remove(i), [mm_n, *slots], [mm_n, *slots, *mm_cards]).then(multi_status, status_in, [mm_count, mm_eta])
+            rm.click(multi_remove(i), [mm_n, *slots], [mm_n, *slots, *mm_cards]).then(multi_status, status_in, status_out)
+        for i, btn in enumerate(mm_writes):
+            btn.click(write_card(i), [mm_n, mm_common, *slots], mm_prompts[i])
+        mm_write_all.click(write_all, [mm_n, mm_common, *slots], mm_prompts)
         mm_loras.focus(lora_choices, outputs=mm_loras)
         mm_go.click(
             make_multi,
             [mm_n, mm_common, mm_quality, mm_smooth, mm_loras, mm_high, mm_low, mm_detail, mm_seed, *slots],
-            [mm_video, mm_up, mm_took],
+            [mm_video, mm_up, mm_took, mm_sent],
         )
 
         m_limit_on.change(lambda on: gr.update(interactive=on), m_limit_on, m_limit)
@@ -938,7 +1120,7 @@ def build_ui(session):
         m_go.click(
             make_motion,
             [m_image, m_video, m_desc, m_limit_on, m_limit, m_quality, m_smooth, m_model, m_audio, m_outfit, m_seed],
-            [m_out, m_up, m_took],
+            [m_out, m_up, m_took, m_sent],
         )
     return demo
 
@@ -995,6 +1177,8 @@ def run_check(session, flag, args):
     parser.add_argument("--quality", choices=list(RESOLUTIONS), default="480p")
     parser.add_argument("--outfit", action="store_true", help="Motion Control: outfit follows the driving video")
     parser.add_argument("--seed", type=int, default=-1)
+    parser.add_argument("--enhance", action="store_true", help="Multi: rewrite every segment with the enhancer before generating")
+    parser.add_argument("--lang", choices=["en", "vi"], default="en", help="Multi: which (VI)/(EN) lines of story.txt to use")
     opts = parser.parse_args(args)
     stamp = time.strftime("%Y-%m-%d-%H%M%S")
 
@@ -1023,7 +1207,11 @@ def run_check(session, flag, args):
             **(extra or {}),
             "video": out, "sheet": sheet,
         }
-        log_harness(entry)
+        log_block(entry, HARNESS_LOG)
+        log_block({
+            "command": "generate", "tab": flag, "model": settings["model_type"], "resolution": settings["resolution"], "seed": settings["seed"],
+            "windows": len(windows), "prompt": settings["prompt"], "video": out, "took": fmt_minutes(took),
+        })
         print(f"duration {got:.2f}s ({total} frames @ {fps:g} fps), expected {expected:.2f}s; log: {HARNESS_LOG}")
         assert ok, "wrong duration"
         return out
@@ -1036,10 +1224,10 @@ def run_check(session, flag, args):
             prompt = Path(prompt_file).read_text(encoding="utf-8")
         else:
             print("enhancer_enabled =", sys.modules["wgp"].server_config.get("enhancer_enabled", 0))
-            ideas = parse_ideas(enhance(session, "", "Suggest short video ideas for this image.", image, ideas_instructions(seconds)))
+            ideas = parse_ideas(enhance(session, "", "Suggest short video ideas for this image.", image, ideas_instructions(seconds), purpose="ideas", tab=flag))
             print("IDEAS:", ideas)
             assert ideas, "no ideas returned"
-            prompt = enhance(session, "", ideas[0], image, detail_instructions(seconds))
+            prompt = enhance(session, "", ideas[0], image, detail_instructions(seconds), purpose="detail", tab=flag)
             print("DETAIL:", prompt)
             assert prompt.strip(), "empty detailed prompt"
             print("enhancer check ok")
@@ -1061,18 +1249,24 @@ def run_check(session, flag, args):
     elif flag == "--check-multi":
         (folder,) = opts.inputs
         folder = Path(folder)
-        story = parse_story((folder / "story.txt").read_text(encoding="utf-8"))
+        common, story = parse_story((folder / "story.txt").read_text(encoding="utf-8"), opts.lang)
         images = [str(folder / name) for name, _, _ in story]
         durations = [seconds for _, seconds, _ in story]
+        prompts = [prompt for *_, prompt in story]
+        if opts.enhance:
+            for i, (image, seconds) in enumerate(zip(images, durations)):
+                end = images[i + 1] if i + 1 < len(images) else None
+                prompts[i] = write_segment(session, image, end, seconds, common, prompts[i], prompts[i - 1] if i else None, tab=flag, index=i)
+                print(f"SEGMENT {i + 1}:\n{prompts[i]}")
         w, h = _image_size(images[0])
         settings = multi_settings(
             session.get_default_settings(REELS_MODEL), images=images, durations=durations,
-            prompts=[prompt for *_, prompt in story], common="", resolution=pick_resolution(w, h, opts.quality),
+            prompts=prompts, common=common, resolution=pick_resolution(w, h, opts.quality),
             seed=opts.seed, detail=opts.detail,
         )
         starts = [sum(durations[:i]) for i in range(len(durations))]
         check("multi", settings, [d * FPS + 1 for d in durations], sum(durations), (*starts, sum(durations) - 0.2), images[0],
-              {"segments": ", ".join(f"{name} {d}s" for name, d, _ in story)})
+              {"segments": ", ".join(f"{name} {d}s" for name, d, _ in story), "lang": opts.lang, "enhance": opts.enhance})
     elif flag == "--check-motion":
         image, video, *rest = opts.inputs
         model = ANIMATE_MODEL if rest and rest[0] == "animate" else MOTION_MODEL
@@ -1088,7 +1282,7 @@ def run_check(session, flag, args):
         out = check("motion", settings, sliding_windows(frames, *MOTION_WINDOWS[model]), expected, (0, 8, 11, 13, 15), image,
                     {"outfit": opts.outfit, "driving_audio": _has_audio(video)})
         audio_in, audio_out = _has_audio(video), _has_audio(out)
-        log_harness({"command": f"{flag} audio check", "driving_audio": audio_in, "output_audio": audio_out, "ok": audio_in == audio_out})
+        log_block({"command": f"{flag} audio check", "driving_audio": audio_in, "output_audio": audio_out, "ok": audio_in == audio_out}, HARNESS_LOG)
         print(f"audio: driving={audio_in} output={audio_out}")
         assert audio_in == audio_out, "output audio does not match the driving video"
     else:
